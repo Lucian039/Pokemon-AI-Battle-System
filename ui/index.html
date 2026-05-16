@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pokemon AI Battle System UI Prototype</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="game-shell">
+      <header class="top-bar" aria-label="玩家狀態列">
+        <button class="player-chip jelly-button" type="button" data-action="profile">
+          <span class="avatar-face" aria-hidden="true"></span>
+          <span>
+            <span class="eyebrow">玩家</span>
+            <strong>小智見習生</strong>
+          </span>
+        </button>
+
+        <div class="resource-pill hp-pill" aria-label="體力">
+          <span class="mini-mark hp-mark" aria-hidden="true"></span>
+          <span>體力</span>
+          <strong>80/100</strong>
+        </div>
+
+        <div class="resource-pill coin-pill" aria-label="金幣">
+          <span class="mini-mark coin-mark" aria-hidden="true"></span>
+          <span>金幣</span>
+          <strong>12,580</strong>
+        </div>
+
+        <div class="top-actions">
+          <button class="round-button jelly-button mail-button" type="button" data-action="mail" aria-label="信箱">
+            <span class="mail-icon" aria-hidden="true"></span>
+          </button>
+          <button class="round-button jelly-button settings-button" type="button" data-action="settings" aria-label="設定">
+            <span class="gear-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+      </header>
+
+      <aside class="side-bar left-bar" aria-label="左側功能列">
+        <button class="nav-button shop-button jelly-button" type="button" data-action="shop">
+          <span class="nav-icon shop-icon" aria-hidden="true"></span>
+          <strong>商城</strong>
+        </button>
+        <button class="nav-button bag-button jelly-button" type="button" data-action="bag">
+          <span class="nav-icon bag-icon" aria-hidden="true"></span>
+          <strong>背包</strong>
+        </button>
+        <button class="nav-button dex-button jelly-button active" type="button" data-action="dex">
+          <span class="nav-icon dex-icon" aria-hidden="true"></span>
+          <strong>圖鑑</strong>
+        </button>
+        <button class="nav-button nurture-button jelly-button" type="button" data-action="nurture">
+          <span class="nav-icon nurture-icon" aria-hidden="true"></span>
+          <strong>培育</strong>
+        </button>
+      </aside>
+
+      <main class="main-stage" aria-live="polite">
+        <section class="hero-panel">
+          <div class="soft-sky" aria-hidden="true">
+            <span class="cloud cloud-one"></span>
+            <span class="cloud cloud-two"></span>
+            <span class="hill hill-one"></span>
+            <span class="hill hill-two"></span>
+          </div>
+
+          <div class="mascot-orb" aria-hidden="true">
+            <span class="mascot-ear left-ear"></span>
+            <span class="mascot-ear right-ear"></span>
+            <span class="mascot-eye eye-left"></span>
+            <span class="mascot-eye eye-right"></span>
+            <span class="mascot-cheek cheek-left"></span>
+            <span class="mascot-cheek cheek-right"></span>
+          </div>
+
+          <div class="stage-copy">
+            <span class="scene-label">控制中心</span>
+            <h1 id="panel-title">圖鑑辨識</h1>
+            <p id="panel-message">管理圖片辨識、圖鑑資料與未來對戰模組的主入口。</p>
+          </div>
+
+          <div class="quick-status">
+            <div class="status-tile">
+              <span>探索券</span>
+              <strong>3</strong>
+            </div>
+            <div class="status-tile">
+              <span>夥伴心情</span>
+              <strong>晴朗</strong>
+            </div>
+            <div class="status-tile">
+              <span>圖鑑資料</span>
+              <strong>819</strong>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="side-bar right-bar" aria-label="右側功能列">
+        <button class="nav-button event-button jelly-button" type="button" data-action="event">
+          <span class="nav-icon event-icon" aria-hidden="true"></span>
+          <strong>活動</strong>
+        </button>
+        <button class="nav-button quest-button jelly-button" type="button" data-action="quest">
+          <span class="nav-icon quest-icon" aria-hidden="true"></span>
+          <strong>任務</strong>
+        </button>
+        <button class="nav-button friend-button jelly-button" type="button" data-action="friend">
+          <span class="nav-icon friend-icon" aria-hidden="true"></span>
+          <strong>好友</strong>
+        </button>
+      </aside>
+
+      <footer class="bottom-bar" aria-label="底部主操作列">
+        <button class="bottom-action adventure-action jelly-button" type="button" data-action="adventure">
+          <span class="action-dot adventure-dot" aria-hidden="true"></span>
+          <strong>冒險</strong>
+        </button>
+        <button class="bottom-action battle-action jelly-button" type="button" data-action="battle">
+          <span class="action-dot battle-dot" aria-hidden="true"></span>
+          <strong>對戰</strong>
+        </button>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="modal-backdrop" id="modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <h2 id="modal-title">信箱</h2>
+        <p id="modal-message">目前沒有新的訊息。</p>
+        <button class="modal-close jelly-button" type="button" id="modal-close">知道了</button>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
