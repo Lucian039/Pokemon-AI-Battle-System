@@ -14,7 +14,37 @@ export type PokemonType =
   | "Fairy"
   | "Rock"
   | "Ground"
-  | "Ice";
+  | "Ice"
+  | "Bug"
+  | "Dark";
+
+export type PokemonRole =
+  | "vanguard"
+  | "fighter"
+  | "mage"
+  | "support"
+  | "tank";
+
+export type PokemonAbilityId =
+  | "overgrow"
+  | "blaze"
+  | "torrent"
+  | "static"
+  | "cute_charm"
+  | "intimidate"
+  | "synchronize"
+  | "guts"
+  | "sturdy"
+  | "regenerator"
+  | "cursed_body"
+  | "natural_cure"
+  | "thick_fat"
+  | "adaptability"
+  | "inner_focus"
+  | "pressure"
+  | "sand_stream"
+  | "technician"
+  | "sand_veil";
 
 export type SkillCategory =
   | "attack"
@@ -55,7 +85,13 @@ export interface PokemonStats {
   name: string;
   name_zh: string;
   types: PokemonType[];
-  role: string;
+  role: PokemonRole;
+  role_zh: string;
+  role_description_zh: string;
+  secondary_roles?: PokemonRole[];
+  ability_id: PokemonAbilityId;
+  ability_zh: string;
+  ability_description_zh: string;
   level: number;
   rarity: number;
   hp: number;
@@ -109,6 +145,7 @@ export interface DraftState {
 export interface BattleCardState {
   pokemon: PokemonStats;
   currentHp: number;
+  abilityUsed?: boolean;
 }
 
 export interface BattleParticipant {
