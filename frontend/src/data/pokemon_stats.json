@@ -107,10 +107,7 @@
     ],
     "role": "vanguard",
     "role_zh": "先鋒",
-    "role_description_zh": "速度型輸出，可利用高機動性切入收頭。",
-    "secondary_roles": [
-      "fighter"
-    ],
+    "role_description_zh": "高速切入與收頭定位，優先用速度創造先手壓力。",
     "level": 45,
     "rarity": 5,
     "hp": 155,
@@ -220,7 +217,7 @@
     "battle_image": "assets/battle/pikachu_battle.png",
     "reference_image": "dataset/reference/25.jpg",
     "skill_ids": [
-      "thunder_shock",
+      "thunderbolt",
       "quick_attack",
       "iron_tail",
       "charge"
@@ -432,12 +429,9 @@
       "Ghost",
       "Poison"
     ],
-    "role": "vanguard",
-    "role_zh": "先鋒",
-    "role_description_zh": "高速刺客兼技能爆發，適合先手壓制脆皮。",
-    "secondary_roles": [
-      "mage"
-    ],
+    "role": "mage",
+    "role_zh": "法師",
+    "role_description_zh": "幽靈系爆發輸出，依靠技能傷害先手壓制脆皮。",
     "level": 42,
     "rarity": 4,
     "hp": 128,
@@ -569,9 +563,6 @@
     "role": "support",
     "role_zh": "輔助",
     "role_description_zh": "護盾與冰場控制定位，可協助隊伍穩住回合。",
-    "secondary_roles": [
-      "tank"
-    ],
     "level": 44,
     "rarity": 4,
     "hp": 185,
@@ -863,10 +854,7 @@
     ],
     "role": "support",
     "role_zh": "輔助",
-    "role_description_zh": "坦型輔助，兼具高血量與治療續航。",
-    "secondary_roles": [
-      "tank"
-    ],
+    "role_description_zh": "治療續航型輔助，以高血量拉長隊伍作戰時間。",
     "level": 44,
     "rarity": 5,
     "hp": 220,
@@ -912,7 +900,7 @@
     "battle_image": "assets/battle/raikou_battle.png",
     "reference_image": "dataset/reference/243.jpg",
     "skill_ids": [
-      "thunder_shock",
+      "thunderbolt",
       "swift",
       "charge",
       "quick_attack"
@@ -996,9 +984,6 @@
     "role": "fighter",
     "role_zh": "鬥士",
     "role_description_zh": "重型物理輸出，能在正面戰線持續施壓。",
-    "secondary_roles": [
-      "tank"
-    ],
     "level": 48,
     "rarity": 5,
     "hp": 182,
@@ -1097,10 +1082,7 @@
     ],
     "role": "fighter",
     "role_zh": "鬥士",
-    "role_description_zh": "物理與波導輸出兼具，可正面對打也可快速切入。",
-    "secondary_roles": [
-      "vanguard"
-    ],
+    "role_description_zh": "物理與波導輸出兼具，以正面換血與中場突破為主。",
     "level": 43,
     "rarity": 4,
     "hp": 142,

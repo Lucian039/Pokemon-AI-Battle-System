@@ -76,7 +76,7 @@ export interface Skill {
   power: number;
   accuracy: number;
   effect: SkillEffect;
-  target: "enemy" | "self";
+  target: "enemy" | "self" | "ally";
   description_zh: string;
 }
 
@@ -88,7 +88,6 @@ export interface PokemonStats {
   role: PokemonRole;
   role_zh: string;
   role_description_zh: string;
-  secondary_roles?: PokemonRole[];
   ability_id: PokemonAbilityId;
   ability_zh: string;
   ability_description_zh: string;
@@ -145,7 +144,18 @@ export interface DraftState {
 export interface BattleCardState {
   pokemon: PokemonStats;
   currentHp: number;
+  currentStamina: number;
+  maxStamina: number;
   abilityUsed?: boolean;
+  attackBoostTurns?: number;
+  defenseBoostTurns?: number;
+  speedBoostTurns?: number;
+  attackDownTurns?: number;
+  defenseDownTurns?: number;
+  speedDownTurns?: number;
+  shieldTurns?: number;
+  asleepTurns?: number;
+  paralyzedTurns?: number;
 }
 
 export interface BattleParticipant {

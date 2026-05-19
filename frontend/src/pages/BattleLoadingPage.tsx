@@ -4,7 +4,7 @@ import { BattleLoadingBar } from "../components/battle-loading/BattleLoadingBar"
 import { BattleTeamCard } from "../components/battle-loading/BattleTeamCard";
 import { VersusCore } from "../components/battle-loading/VersusCore";
 import type { BattleCardState, BattleParticipant } from "../types/battle";
-import { getBattleEnabledPokemon } from "../utils/battleCalculator";
+import { DEFAULT_STAMINA, getBattleEnabledPokemon } from "../utils/battleCalculator";
 
 function createFallbackTeam(offset = 0): BattleCardState[] {
   return getBattleEnabledPokemon()
@@ -12,6 +12,8 @@ function createFallbackTeam(offset = 0): BattleCardState[] {
     .map((pokemon) => ({
       pokemon,
       currentHp: pokemon.max_hp,
+      currentStamina: DEFAULT_STAMINA,
+      maxStamina: DEFAULT_STAMINA,
     }));
 }
 
@@ -54,10 +56,16 @@ function TeamFan({
 export default function BattleLoadingPage({
   playerTeam,
   enemyTeam,
+  roundLabel = "一般模式",
+  playerWins = 0,
+  computerWins = 0,
   onComplete,
 }: {
   playerTeam?: BattleParticipant["team"];
   enemyTeam?: BattleParticipant["team"];
+  roundLabel?: string;
+  playerWins?: number;
+  computerWins?: number;
   onComplete?: () => void;
 }) {
   const [progress, setProgress] = useState(0);
@@ -86,9 +94,16 @@ export default function BattleLoadingPage({
       <div className="pointer-events-none absolute -left-28 -top-32 h-[560px] w-[560px] rounded-full bg-cyan-400/22 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-36 -right-24 h-[620px] w-[620px] rounded-full bg-rose-600/24 blur-3xl" />
 
+      <div className="absolute left-8 top-8 z-30 text-5xl font-black leading-none text-cyan-100 drop-shadow-[0_0_22px_rgba(34,211,238,0.5)]">
+        {playerWins}
+      </div>
+      <div className="absolute right-8 top-8 z-30 text-5xl font-black leading-none text-rose-100 drop-shadow-[0_0_22px_rgba(244,63,94,0.5)]">
+        {computerWins}
+      </div>
+
       <motion.div className="absolute inset-x-0 top-8 z-30 mx-auto w-full max-w-xl text-center" initial={{ opacity: 0, y: -16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.45 }}>
         <p className="text-xs font-black uppercase tracking-[0.24em] text-slate-400">Normal Battle</p>
-        <h1 className="mt-2 text-4xl font-black text-white drop-shadow-[0_0_28px_rgba(255,255,255,0.28)]">一般模式</h1>
+        <h1 className="mt-2 text-4xl font-black text-white drop-shadow-[0_0_28px_rgba(255,255,255,0.28)]">{roundLabel}</h1>
       </motion.div>
 
       <TeamFan title="玩家隊伍" subtitle="PLAYER TEAM" team={resolvedPlayerTeam.slice(0, 3)} side="player" />
