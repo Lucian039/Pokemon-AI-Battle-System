@@ -50,6 +50,7 @@ export const leftNav: NavAction[] = [
 
 export const rightNav: NavAction[] = [
   { id: "event", label: "活動", icon: CalendarDays, accent: "text-violet-300" },
+  { id: "typeGuide", label: "屬性表", icon: Zap, accent: "text-yellow-300" },
   { id: "quest", label: "任務", icon: Trophy, accent: "text-amber-300" },
   { id: "friend", label: "好友", icon: Users, accent: "text-sky-300" },
 ];
@@ -108,6 +109,12 @@ export const lobbyContent = {
     subtitle: "限時活動頻道展示。",
     status: "Event channel online",
     icon: Sparkles,
+  },
+  typeGuide: {
+    title: "屬性克制",
+    subtitle: "選擇攻擊屬性，快速查看超級克制、克制與被剋關係。",
+    status: "Type chart ready",
+    icon: Zap,
   },
   quest: {
     title: "任務",

@@ -1,11 +1,292 @@
 # Pokemon-AI-Battle-System
 
+## 05/23: 加強 v3.1 訓練突破平台期
+- `LearningAgent` 最低探索率由 `0.08` 降為 `0.02`，長訓練後減少隨機壞招對近 500 場勝率的拖累。
+- 模型選招加入小型戰術先驗，會在 Q 值排序時參考擊殺、剋制、治療缺口、護盾威脅、休息體力與換牌對位改善。
+- Reward shaping 補強攻擊、治療、無效 setup 與終局血量差，讓訓練更直接獎勵能收頭、保血與高品質勝局的行為。
+
+## 05/22: 將主監控近期勝率改為近 500 場
+- 模型列表與訓練中統計卡的近期勝率主指標改用 `recentWinRate500`，降低近 100 場造成的短期抖動。
+- 後端 `metrics-report` 白底 SVG 的綠色近期勝率曲線改為 Recent 500 Win Rate，與主畫面判讀一致。
+- 報告摘要仍保留近 100、近 500、近 1000 場欄位，用於事後比較短期波動與長期趨勢。
+
+## 05/21: 新增最近 N 場勝率與白底訓練報告圖
+
+- 訓練狀態新增 `recentResults`，最多保留最近 1000 場逐場結果，用於計算近 100、近 500、近 1000 場勝率。
+- `metricHistory` 新增 `recentWinRate100`、`recentWinRate500`，後續曲線圖可同時觀察 Loss、Epsilon 與最近勝率。
+- 後端 `summary.json` 與 `GET /api/training/models/:id/metrics-report` 的 `summary` 新增 `recentResultCount`、`recentWinRate100`、`recentWinRate500`、`recentWinRate1000`。
+- 報告彈窗的 `chartSvg` 仍由後端即時生成，但改為一般白底 SVG，並在有新資料時加入 Recent 100 Win Rate 綠色曲線。
+- 舊模型沒有逐場結果時，最近勝率顯示 `--`；繼續訓練或複製後續訓練會開始累積最近 N 場資料。
+
+## 05/21: 新增模型刪除二次確認
+
+- 在單局戰術模型資訊欄點擊「刪除」時，改為先開啟頁內確認視窗，不會立即呼叫刪除 API。
+- 確認視窗會顯示目標模型名稱與「刪除後無法復原」提示；使用者按「確定刪除」後才會送出 `DELETE /api/training/models/:id`。
+- 「取消」會關閉確認視窗並保留模型資料；刪除送出期間按鈕會顯示「刪除中」並停用重複操作。
+- 輸出格式：成功後重新整理模型列表、選取下一個可用模型並清除錯誤訊息；失敗時維持確認視窗可重試，並在頁面底部顯示錯誤訊息。
+
+## 05/21: 調整戰鬥操作區與底部卡排
+- 戰鬥操作區改為三欄固定配置：左側上方為「更換卡片」、左側下方為「休息」，中間常駐顯示原技能按鈕，右側上方為「普通攻擊」、右側下方為「護盾」。
+- 技能區不再使用抽屜，最多以 2x2 方式直接顯示四個技能，並保留體力不足提示、技能 tooltip 與隊友治療目標流程。
+- 「休息」固定於玩家可行動時可用，效果走既有戰鬥時間軸，回復 40 體力後交棒給下一位行動者。
+- 「普通攻擊」使用臨時技能資料，基礎威力 30、命中 100、固定消耗 10 體力，屬性採目前出戰寶可夢第一屬性，仍套用既有傷害、屬性倍率、特性、Buff/Debuff、護盾與戰鬥訊息。
+- 底部雙方卡排一次顯示三張卡，卡片高度對齊中央操作區節奏；目前出場卡牌會略為上浮，讓備戰與出場狀態能同列辨識。
+
+## 05/21: 調整戰鬥四鍵操作與普通攻擊
+
+- 戰鬥操作區改為三欄配置：左側上「更換卡片」、左側下「休息」，中間為「技能」區，右側上「普通攻擊」、右側下「護盾」。
+- 修正休息只能在沒有可用技能時出現的問題；玩家回合只要可行動，就可直接點擊「休息」回復 40 體力並交棒。
+- 休息改走既有戰鬥時間軸，會像技能一樣顯示動作卡、效果文字與回合交棒動畫，不再立即切換回合。
+- 新增「普通攻擊」固定指令：基礎威力 30、命中 100、消耗 10 體力，屬性使用目前出戰寶可夢第一屬性。
+- 規範用法：普通攻擊仍走既有 `resolveSkill()` 與 `calculateDamage()` 流程，會套用攻防、屬性倍率、特性、Buff/Debuff、護盾與戰鬥訊息，不另外建立第二套傷害公式。
+- 輸出格式：原寶可夢技能集中於中間「技能」區；展開後可照原規則使用技能，治療隊友技能仍會開啟目標選擇。
+
+## 05/21: 新增超級克制與 18 屬性完整表
+
+- 新增「超級克制」判定：單一招式屬性對雙屬性防守方乘算後若 `typeMultiplier >= 4`，戰鬥提示顯示「超級克制！」；單屬性 `x2` 仍顯示「效果絕佳！」。
+- `frontend/src/data/type_chart.json` 補齊官方第六世代後 18 屬性倍率，包含蟲與惡攻擊屬性；未列出的攻防組合視為 `x1`。
+- 範例：火屬性招式攻擊草／鋼防守方時，倍率為 `2 * 2 = x4`，顯示「超級克制！」；火攻擊草單屬性仍為 `x2`，顯示「效果絕佳！」。
+- 規範用法：`getTypeMultiplier(moveType, defenderTypes)` 維持逐一乘算防守屬性；任何 UI 或 AI 評估不得另外硬編超級克制倍率。
+- 輸出格式：圖鑑屬性分頁新增「超級克制」區塊，使用 `攻擊屬性 x4 防守雙屬性` 顯示，例如 `火 x4 草／鋼`。
+
+| 攻擊屬性 | 超級克制的防守雙屬性組合 |
+|---|---|
+| 火 | 草／冰、草／蟲、草／鋼、冰／蟲、冰／鋼、蟲／鋼 |
+| 水 | 火／地面、火／岩石、地面／岩石 |
+| 電 | 水／飛行 |
+| 草 | 水／地面、水／岩石、地面／岩石 |
+| 冰 | 草／地面、草／飛行、草／龍、地面／飛行、地面／龍、飛行／龍 |
+| 格鬥 | 一般／冰、一般／岩石、一般／惡、一般／鋼、冰／岩石、冰／惡、冰／鋼、岩石／惡、岩石／鋼、惡／鋼 |
+| 毒 | 草／妖精 |
+| 地面 | 火／電、火／毒、火／岩石、火／鋼、電／毒、電／岩石、電／鋼、毒／岩石、毒／鋼、岩石／鋼 |
+| 飛行 | 草／格鬥、草／蟲、格鬥／蟲 |
+| 超能力 | 格鬥／毒 |
+| 蟲 | 草／超能力、草／惡、超能力／惡 |
+| 岩石 | 火／冰、火／飛行、火／蟲、冰／飛行、冰／蟲、飛行／蟲 |
+| 幽靈 | 超能力／幽靈 |
+| 惡 | 超能力／幽靈 |
+| 鋼 | 冰／岩石、冰／妖精、岩石／妖精 |
+| 妖精 | 格鬥／龍、格鬥／惡、龍／惡 |
+
+## 05/21: 持久化一般模式套用模型狀態
+- 一般模式的訓練模型套用狀態改為保存到 localStorage，重新整理或重新進入一般模式後仍會顯示「已套用訓練模型」。
+- 新增 localStorage key：`pokemon-applied-training-model-v1`。
+- 移除套用時會同步清除保存狀態，避免一般模式誤判仍有模型套用。
+
+## 05/21: 保存改為手動完成模型
+- 訓練頁原「保存」按鈕改為「完成」，可讓尚未達成目標的模型提早停止並視為完成。
+- 後端 `POST /api/training/models/:id/save` 現在會停止訓練、保存權重、寫入 `manuallyCompleted` 與 `completedAt`，並回傳 completed 狀態。
+- 手動完成模型可看曲線圖、複製續訓與套用到一般模式；reset 會清除手動完成狀態。
+
+## 05/20: 記錄第三版換卡與換人策略訓練方向
+- `docs/training-model-architecture.md` 新增第三版章節，記錄加入換卡、換人後勝率短期不升反降的原因。
+- 第三版重點是讓模型學會換人、保留主力、對位改善與跨回合優勢，不再只看當回合傷害。
+- 後續調整訓練模式時，需同步追蹤換人 reward、有效換人率、換人後被擊倒比例、連續換人與錯過擊倒機會等指標。
+
+## 05/20: 單局戰術訓練補強換牌與護盾學習
+- 一般對戰調整為 AI 優先：套用訓練模型且權重載入成功時，CPU 直接由 `LearningAgent` 從 `skill`、`rest`、`switch` 合法動作中選擇；手寫難度規則、保底換牌與保底護盾只在未套用模型或模型載入失敗時 fallback。
+- 訓練 reward 補強換牌與護盾：低血換出、換上後對位改善、威脅下降、低血或高威脅時開盾、護盾實際減傷會加分；優勢或滿血亂換、連續反覆換牌、已開盾重複開盾、低威脅空開盾會扣分。
+- `trainingLoop` 新增 curriculum episode，包含低血開局、不利屬性開局、低體力開局與敵方高威脅開局，讓模型在訓練中更常遇到需要換牌或護盾的情境。
+- `RuleBasedAgent` 增加基本換牌與護盾行為，使 LearningAgent 訓練時能對抗會保命與改善對位的對手，而不是只學攻擊與休息。
+- `TrainingState` 與訓練摘要新增 `switchCount`、`shieldCount`、`beneficialSwitchCount`、`effectiveShieldCount`，訓練頁與 metrics report 顯示換牌率、有效換牌率、護盾率與有效護盾率。
+- 既有模型可繼續載入與訓練，但舊權重不會自動具備新策略；需要重新訓練或複製後續訓，才會逐步學到新的換牌與護盾 reward。
+
+## 05/20: 一般對戰電腦新增主動戰術換牌
+- 一般模式 CPU 回合新增戰術換牌檢查：若目前主戰低血、沒有可用攻擊，或備戰角色相對玩家主戰具備更高攻擊收益與承傷表現，會優先更換卡牌。
+- 換牌判斷目前只作為 fallback：若已套用模型且模型權重載入成功，會先交由 `LearningAgent` 決定是否換牌；只有模型未載入、載入失敗或未套用模型時，才使用手寫戰術換牌。
+- 規範用法：fallback 狀態下 `random` 與 `beginner` 不主動套用戰術換牌；`normal`、`hard`、`master`、`hell` 依難度降低換牌門檻，越高難度越積極。
+- 輸出格式：觸發換牌時沿用一般對戰既有更換動畫與訊息「電腦更換為 XXX」。
+
+## 05/20: 修正複製模型進入監控頁自動播放回合
+- 複製模型時會保留訓練統計、replay buffer 與模型權重，但清空 `currentReplay`，避免進入監控頁後未按「開始」仍播放來源模型最後一回合。
+- 訓練監控頁改為只有 `workerState.training === true` 時才播放 replay 與左右隊伍動作脈衝；paused、剛進入、複製後進入都維持靜止畫面。
+- 後端暫停或中止 episode 時不再保存未完成 replay，`pause` 也會清空 `currentReplay`。
+- 規範用法：進入模型監控頁不等於開始訓練；只有按「開始」才允許產生、播放或推進訓練回合。
+
+## 05/20: 一般對戰改為載入已套用訓練模型權重
+- 後端訓練服務新增 `GET /api/training/models/:id/artifacts`，回傳 `modelTopology`、`weightSpecs` 與 base64 權重資料，供前端一般對戰載入已保存的 TensorFlow.js 模型。
+- 一般模式在套用訓練模型後，會建立 `LearningAgent` 並透過 `importArtifacts()` 載入 `training_data/models/{modelId}/model.json` 與 `weights.bin`，電腦回合優先由模型在合法動作中選擇技能、休息或更換。
+- 規範用法：完成模型需先保存出 `model.json` 與 `weights.bin`；若權重載入成功，一般對戰顯示「模型權重已載入」。若訓練服務未啟動或權重缺失，畫面顯示載入失敗並暫時回退原本難度規則。
+- 輸出格式：`artifacts` API 回傳 `{ modelId, modelName, difficulty, modelTopology, weightSpecs, weightDataBase64 }`。
+
+## 05/20: 新增完成訓練模型套用對戰難易度
+- 單局戰術訓練模型列表最右側新增「套用」欄位，只有完成模型可套用；套用中的模型狀態顯示「套用中」，按鈕改為「移除」。
+- 點擊「套用」會依模型訓練難度同步設定一般模式的電腦難易度；`beginner`、`normal`、`hard`、`master`、`hell` 會完整對應入門、中等、困難、大師、地獄。
+- 一般模式加入電腦後，電腦難易度區會顯示目前套用中的模型名稱；若玩家手動切換難易度，會解除模型套用狀態。
+- UI 規範：套用按鈕放在模型列表最右側，不影響主訓練畫面排版；移除只解除套用狀態，不刪除模型資料。
+
+## 05/20: 一般模式電腦難度改由套用訓練模型決定
+- 一般模式房間在點擊「加入電腦」後，會顯示目前套用的訓練模型；若未套用模型，電腦維持隨機選角與隨機出招。
+- 規範用法：訓練頁套用模型後，一般模式依模型難度映射電腦策略；入門偏隨機，中等使用一般策略，困難、大師、地獄逐步提高選角強度與技能決策積極度。
+- 輸出格式：一般模式不提供手動難易度切換；模型套用 / 解除套用由訓練模型列表處理，戰鬥流程仍維持三局兩勝。
+
+## 05/20: 完成模型監控頁停止 replay 與重啟訓練
+- 完成模型重新進入監控頁時，戰鬥區會顯示「已完成」並虛化背景，不再播放最近 replay。
+- 訓練頁的「開始」在完成狀態會改為停用的「已完成」。
+- 後端 `POST /api/training/models/:id/start` 會先檢查 completed，已完成模型直接維持 paused/completed 狀態，不會再多跑一場。
+
+## 05/20: 修正訓練暫停與完成模型入口
+- 模型選單中已完成模型的操作按鈕改為「進入」，保留可點擊狀態，方便回到訓練監控頁查看結果。
+- 後端訓練服務新增 `controlVersion` 控制，暫停或重置後正在收尾的 episode 不會再推進訓練狀態或排下一輪。
+- 勝率顯示改為小數第二位，避免 `64.97%` 被四捨五入顯示成 `65.0%` 造成完成判定誤解。
+
+## 05/20: 新增訓練完成後曲線圖報告
+- 後端新增 `GET /api/training/models/:id/metrics-report`，僅在模型達成現有 `completed` 條件後回傳；未完成時回傳 `409`。
+- API 回傳 `chartSvg` 與 `summary`：`chartSvg` 為後端即時生成的 Loss / Epsilon SVG 折線圖，`summary` 包含 episodes、勝率、勝敗和、平均回合、loss、epsilon、訓練時間、難度、目標與更新時間。
+- `frontend/src/pages/AITrainingPage.tsx` 的訓練頁 header 新增「曲線圖」按鈕，只有訓練完成後啟用。
+- 點擊「曲線圖」會開啟雙欄彈窗：左側顯示後端生成 SVG，右側顯示完整摘要資訊欄。
+- 規範用法：曲線圖只畫 Loss 與 Epsilon；其他訓練數據放在右側摘要，不另存圖檔，避免過期報告。
+
+## 05/19: 修正訓練時間秒數回跳
+- `frontend/src/pages/AITrainingPage.tsx` 的訓練時間現在會在訓練中忽略較舊的後端秒數，避免前端計時已到 33 秒時又被 SSE 進度覆蓋回 32 秒。
+- reset payload 仍會正常把訓練時間歸零；暫停或載入模型時則以後端保存秒數為準。
+- 訓練時間文字加上固定寬度與 `tabular-nums`，避免數字變化造成標題區左右晃動。
+- 規範用法：訓練中顯示時間必須單調遞增，只有重置訓練可以讓秒數回到 `00:00:00`。
+
+## 05/19: 新增模型訓練技術文檔
+- 新增 `docs/training-model-architecture.md`，整理第一版單一 DQN 訓練架構、遇到的 Q 值高估與 loss 爆量問題，以及第二版 Dueling DDQN + PER 的解法。
+- 規範用法：之後調整訓練模式、模型架構、reward、replay buffer、對手課程、電腦難度、賽局訓練或保存格式時，需同步更新該文檔的「訓練模式調整文件更新規範」與「變更紀錄」。
+- 輸出格式：每次訓練調整需以 `MM/DD: 變更標題` 記錄目的、修改項目、影響範圍、參數、相容性與驗證方式。
+
+## 05/19: 調整訓練廣播中央顯示
+- `frontend/src/pages/AITrainingPage.tsx` 的 `ActiveFighter` 移除主戰寶可夢外層卡片框，改為固定高度、無邊框的置中展示。
+- 主戰寶可夢不再因 active 狀態上下位移，避免訓練廣播畫面在攻擊回合跳動。
+- `Battle Log` 移除底部卡片式背景與邊框，改為固定高度的置中廣播文字。
+- 規範用法：訓練廣播中間僅保留角色名稱、寶可夢圖像與 HP/SP 指標；廣播文字固定置中，不使用卡片容器。
+
+## 05/19: 新增 Node 後端訓練服務與快速訓練入口
+
+- 新增 `frontend/server/trainingServer.ts`，以 Node/TypeScript 長駐服務執行單局模型訓練，前端關閉後只要後端 PowerShell 視窗仍在，訓練會繼續進行。
+- 新增訓練 API：`GET/POST /api/training/models`、`GET/DELETE /api/training/models/:id`、`POST /start|pause|reset|save|load` 與 `GET /events` SSE 進度串流。
+- `AITrainingPage` 改為前端監控頁，透過 `http://127.0.0.1:8787` 讀取模型列表、建立模型、控制訓練與接收 SSE 更新，不再以瀏覽器 Web Worker 作為主要訓練來源。
+- 後端資料保存於 `training_data/models/{modelId}/`，包含 `metadata.json`、`summary.json`、`latest-replay.json`、`model.json` 與 `weights.bin`；後端重啟時會自動掃描恢復模型列表。
+- 新增 `frontend/server/build-training-server.mjs` 與 npm scripts：`server:build` 用 esbuild 打包後端，`server:training` 啟動後端訓練服務。
+- 新增 `start_training.bat`，會建置前端與後端、開啟後端訓練監控 PowerShell，並直接打開 `http://localhost:4173/?page=training`。
+- 新增 URL 入口：`?page=training` 或 `#/training` 會直接進入單局訓練模型列表；原 `start_ui.bat` 大廳入口維持不變。
+
+## 05/19: 新增訓練 Loss / Epsilon 同步曲線
+- `frontend/src/types/battle.ts` 新增 `TrainingMetricPoint`，並在 `TrainingState.metricHistory` 保存最多 720 個全訓練區間降採樣 episode 指標。
+- `frontend/src/training/trainingLoop.ts` 在每次 `reduceTrainingState()` 完成 episode 彙整後追加 `{ episode, loss, epsilon }`，讓訓練頁能用同一個 X 軸呈現 Loss 與 Epsilon。
+- `frontend/src/pages/AITrainingPage.tsx` 新增 `TrainingMetricChart`，使用單張 SVG 雙曲線圖呈現 Loss 與 Epsilon；滑鼠移到圖上時會以同一個 episode 顯示同步 tooltip。
+- 規範用法：X 軸固定為 episode，Loss 使用左側語意與 rose 色系，Epsilon 使用右側語意與 violet 色系；tooltip 輸出格式為 `Episode N`、`Loss 0.0000`、`Epsilon 0.000`。
+- 相容性：舊存檔若沒有 `metricHistory`，畫面會以目前 `training.loss` 與 `training.epsilon` 產生單點 fallback；reset 後清空曲線。
+
+## 05/20: 修正訓練曲線全程降採樣顯示
+- `frontend/src/training/trainingLoop.ts` 將 `metricHistory` 從只保留末端資料改為最多 720 點全程降採樣，保留首點、末點與中間區間代表點。
+- `frontend/server/trainingServer.ts` 的 metrics report SVG 會以 `history[0].episode` 到最後 episode 顯示完整訓練區間，並輸出取樣點數 / 總 episodes 提示。
+- 規範用法：曲線圖呈現全訓練過程的降採樣趨勢；Loss 與 Epsilon API 格式不變，仍為 `{ episode, loss, epsilon }`。
+- 相容性：舊模型若先前已被截斷為最後 240 筆，無法還原已遺失的早期 episode 點；新訓練資料會依全程降採樣策略保存。
+- 另修正 `frontend/src/training/learningAgent.ts` 的 TensorFlow `weightData` 型別處理，支援 `ArrayBuffer` 與 `ArrayBuffer[]`，避免 build 在匯出 artifacts 型別檢查時失敗。
+
+## 05/19: 調整模型狀態面板滿版排版
+- `frontend/src/pages/AITrainingPage.tsx` 的模型資訊面板改為上方標題、中段統計、下方目標資訊與操作按鈕的滿版配置。
+- 統計卡片改為在右側面板中段撐滿可用高度，目標資訊固定在統計區下方，刪除與訓練按鈕固定貼近面板底部並加高。
+- 模型列表欄位同步收窄，避免 1280px 視窗下列表列內容溢出到右側狀態面板。
+- 規範用法：右側資訊面板需維持 `grid-rows-[auto_minmax(0,1fr)_auto]` 的三段式結構；左側列表欄位不得使用超過面板寬度的固定總寬。
+- 輸出格式：模型狀態面板需完整使用可視高度，不得在目標資訊與底部按鈕之間留下大塊空白。
+
+## 05/19: 強化模型設定難度顏色辨識
+- `frontend/src/pages/AITrainingPage.tsx` 的新增模型設定視窗調整難度按鈕樣式，五種難度在未選取狀態也會保留對應色系邊框、深色底與文字色。
+- 選取中的難度改用更高亮度背景、白色文字、色系光暈與 ring 外框，讓目前選項和其他難度能明確區分。
+- 規範用法：難度按鈕需使用 `selectedClassName` 與 `unselectedClassName` 分別控制選取/未選取狀態；列表徽章仍使用 `className`，避免設定視窗樣式影響模型列表。
+- 輸出格式：難度色系維持入門綠色、中等藍色、困難紫色、大師橘色、地獄紅色。
+
+## 05/19: 移除訓練頁內部層級選擇
+
+- 訓練層級選擇只保留在大廳訓練浮層中。
+- `AITrainingPage` 預設直接顯示單局戰術模型列表，不再顯示原本的訓練選擇頁。
+- 單局模型列表的返回按鈕現在直接回大廳；訓練畫面的返回按鈕回模型列表。
+
+## 05/19: 新增模型建立設定與列表資訊欄位
+
+- `frontend/src/pages/AITrainingPage.tsx` 的單局戰術模型列表新增欄位標題：狀態、名稱、訓練時間、難度、場次、勝率，列表列會固定對齊顯示完整摘要。
+- 模型右側資訊欄加寬並改為雙欄摘要卡，顯示 episodes、勝率、平均回合、loss、epsilon、訓練時間、難度、目標、目標場次與更新時間，避免需要用捲輪才能看完主要數據。
+- 新增模型不再直接建立空資料；點擊「新增模型」會先開啟設定視窗，可設定名稱、難度，並在「訓練時間」與「勝率」兩種目標中擇一。確認後才建立模型並跳轉到訓練頁。
+- 難度規範：入門為綠色、中等為藍色、困難為紫色、大師為橘色、地獄為紅色；難度同時決定預設目標場次，分別為 150、300、500、800、1200 場。
+- 勝率完成條件採複合門檻：必須同時達成難度對應最低場次與使用者設定的目標勝率，避免前幾場勝率過高就提早完成。
+- localStorage 模型資料向下相容舊格式；舊模型缺少難度或目標模式時，會以中等、勝率目標作為預設值補齊。
+
+## 05/19: 調整訓練對戰畫面資訊配置
+
+- 移除訓練對戰畫面中央上方的 replay 廣播標題與訊息，避免與戰鬥畫面重複顯示。
+- 移除右下方 replay 廣播列表，右側狀態欄保留保存狀態、進度條、勝場與敗場。
+- 中央戰鬥畫面上方新增「訓練時間」，下方以 `00:00:00` 格式顯示，目前以前端計時器在 Worker 訓練中累加，重置訓練時歸零。
+
+## 05/19: 新增大廳訓練入口浮層
+
+- 大廳點擊左側「訓練」後不再直接切換頁面，改為在訓練按鈕旁彈出訓練類型選擇浮層。
+- 浮層開啟時大廳背景會模糊，點擊浮層外任意區域會關閉並回到大廳。
+- 浮層提供兩個選項：「單局戰術訓練」可進入模型列表；「賽局策略訓練」目前顯示保留狀態。
+- 從浮層進入單局戰術訓練時會直接顯示模型清單，不再重複顯示訓練層級選擇頁。
+
+## 05/19: 調整單局戰術模型列表與訓練入口
+
+- 單局戰術訓練列表頁改為只保留左側模型清單與右側模型資訊欄，不再在列表頁顯示訓練 replay 或完整設定表單。
+- 預設沒有訓練資料，使用者需要先按「新增模型」建立模型記錄；新增後模型狀態預設為「未完成」且資訊欄顯示尚未訓練。
+- 右側資訊欄顯示所選模型的訓練狀況：episodes、勝率、平均回合、loss、epsilon、目標場次與目標勝率；若沒有訓練資料則顯示空狀態。
+- 右側資訊欄下方提供「刪除」與「訓練」；若模型已達成目標場次與目標勝率，訓練按鈕會改為「已完成」並停用。
+- 點擊「訓練」後才進入原本 AI 對戰訓練畫面，可觀看 replay、控制開始 / 暫停 / 重置 / 保存 / 載入；訓練進度會回寫到模型清單資料。
+
+## 05/19: 新增訓練層級選擇與單局模型管理介面
+
+- `AITrainingPage` 入口改為先選擇訓練層級：「單局戰術訓練」可進入，「賽局策略訓練」先保留，之後用於三回合兩勝制與跨局策略。
+- 單局戰術訓練頁中央改為模型列表，每個模型最前方顯示「完成 / 未完成」，並依目前訓練 episodes、勝率與模型目標判斷是否達標。
+- 模型列表下方新增「新增模型」，會建立新的 `BattleTacticsAgent` 設定檔，設定內容先存於 `localStorage`。
+- 點擊模型後右側顯示設定面板，可調整模型名稱、描述、目標勝率、目標場次、評估視窗、對手課程、learning rate、epsilon 初始值 / 最小值 / 衰減、最大回合、reward 權重與達標後自動保存。
+- 目前 Worker 仍使用既有單一 `LearningAgent` 訓練流程；模型設定頁先建立 UI 與資料結構，下一步可把設定傳入 Worker，讓不同模型使用不同訓練參數與保存 key。
+
+## 05/19: 修正離開訓練頁後背景訓練停止
+
+- 新增 `frontend/src/training/trainingWorkerClient.ts`，以單例方式管理 `aiTraining.worker.ts`，避免 `AITrainingPage` unmount 時終止 Worker。
+- `AITrainingPage` 現在只負責訂閱 Worker 訊息與送出控制指令；退回大廳時會取消訂閱，但不會自動 `pause` 或 `terminate()`。
+- 使用方式：在訓練頁按「開始」後可直接退回大廳，背景訓練會持續進行；再次進入訓練頁時會透過 `status` 取回最新 episodes、metrics 與 replay。
+- 暫停規則：只有使用者按「暫停」才會送出 `pause`，退回大廳不再視為暫停。
+
+## 05/19: 新增模型保存與背景訓練 MVP
+
+- 新增 `frontend/src/training/aiTraining.worker.ts`，將 `LearningAgent` 連續訓練移到 Web Worker 背景執行，UI 透過 `start`、`pause`、`reset`、`save`、`load`、`status` 訊息控制訓練流程。
+- 新增 TensorFlow.js IndexedDB 模型保存，固定使用 `indexeddb://pokemon-battle-tactics-v1` 作為模型 key；保存內容包含模型權重與訓練 metadata。
+- metadata 格式包含 `version: "battle-tactics-v1"`、`savedAt`、`trainingState` 與 `epsilon`，可在重新整理後載入既有 episodes、勝率、平均回合、平均 reward、loss 與探索率。
+- 更新 `AITrainingPage`，新增開始、暫停、重置、保存模型、載入模型控制，並顯示 Worker 訓練狀態、保存狀態與最新 replay。
+- 暫停規則改為 Worker 在下一個安全回合停止，不再讓 UI 端直接持續跑完整訓練迴圈。
+- 訓練順序維持單一 `LearningAgent`：前 50 場對 `RandomAgent`，第 50 場後對 `RuleBasedAgent`；仍為第一層 `BattleTacticsAgent` 單局戰術訓練，不加入三局兩勝制。
+
+### Worker 訊息格式
+
+- UI 到 Worker：`start`、`pause`、`reset`、`save`、`load`、`status`。
+- Worker 到 UI：`ready`、`progress`、`paused`、`saved`、`loaded`、`reset`、`error`。
+- 每次 `progress` 會回傳最新 `TrainingState`，其中包含 `episodes`、`winRate`、`averageTurns`、`loss`、`epsilon`、`status` 與 `currentReplay`。
+
+### 使用方式與限制
+
+- 進入大廳的訓練入口後可開啟背景訓練頁，按「開始」後 Worker 會自動連續跑 episode，對戰結束後直接開下一局。
+- 按「保存模型」會將 TensorFlow.js 模型存入瀏覽器 IndexedDB；重新整理後按「載入模型」可接續訓練。
+- MVP 3 僅支援本機瀏覽器 IndexedDB，不做雲端同步、帳號保存或模型匯出；若瀏覽器不支援 IndexedDB，頁面會顯示保存失敗但訓練仍可進行。
+
 ## 05/19: 新增死亡後指定下一位出場角色
 
 - 新增 `frontend/src/pages/LobbyPage.tsx` 死亡後強制換人流程：當我方出戰角色 HP 歸零且隊伍仍有存活角色時，不再自動切換，改為彈出與治療目標相同層級的選擇畫面，玩家可指定下一位要出場的角色。
 - 規範用法：死亡後的出場選擇不可取消，只顯示存活且非目前倒下角色的備戰夥伴；選定後會鎖定回合並播放既有 `switch` 出場 timeline。
 - 電腦方行為：敵方角色死亡後會自動挑選下一位存活角色出場，並同樣播放出場卡片、光束與入場高亮特效。
 - 輸出格式：戰鬥訊息會顯示「需要派出下一位夥伴」與「選擇 XXX 出場」，出場完成後依原回合流程恢復下一位行動者的體力並開放操作。
+
+## 05/19: 新增單一 LearningAgent 自動連續訓練 MVP
+
+- 新增 `@tensorflow/tfjs`，在瀏覽器內建立 `LearningAgent`，以 DQN 概念從目前戰鬥狀態預測合法動作的分數。
+- 新增 `frontend/src/training/learningAgent.ts`，包含固定長度 state vector、動作索引、epsilon-greedy 選擇、單步 transition 訓練與 epsilon 衰減。
+- 新增 `frontend/src/training/trainingLoop.ts`，提供 `runTrainingEpisode()`、`createInitialTrainingState()` 與 `reduceTrainingState()`，每場 episode 結束後自動結算勝率、平均回合、reward、loss 與最新 replay。
+- 訓練流程預設只訓練 `LearningAgent`；前 50 場對手為 `RandomAgent`，第 50 場後改與 `RuleBasedAgent` 對戰，方便先確認 AI 是否能打贏基準策略。
+- `AITrainingPage` 已改為真實訓練狀態：支援開始、暫停、重置；開始後每場結束會自動建立下一局，不停在結果畫面，暫停後才停止開新局。
+- Reward 規範：勝利加分、失敗扣分、造成傷害與治療加分、受到傷害與我方倒下扣分、擊倒對手加分。
+- 目前限制：本版不保存模型、不使用 Web Worker；訓練仍在主執行緒中執行，若長時間訓練造成 UI 卡頓，下一版需搬到 Worker 並加入 IndexedDB 模型保存。
+
+## 05/19: 新增 AI vs AI 模擬與觀戰 MVP
+
+- 新增 `frontend/src/utils/battleEngine.ts`，提供瀏覽器端 AI 對戰模擬用的純函式流程：初始化 3v3 隊伍、取得合法動作、執行技能/休息/換人、回合切換、勝負判定與 replay event 產生。
+- 新增 `frontend/src/utils/battleAgents.ts`，提供 `RandomAgent` 與 `RuleBasedAgent`。`RandomAgent` 從合法動作中隨機選擇；`RuleBasedAgent` 依治療、護盾、有效攻擊、狀態技能、休息與換人順序決策。
+- 新增 `frontend/src/pages/AITrainingPage.tsx`，可從大廳「訓練」入口進入，支援觀看 AI vs AI replay、播放/暫停、重播、產生新對戰，並顯示 mock 訓練狀態。
+- Replay event 輸出格式包含 `turnNumber`、`actor`、`action`、`actionLabel`、`message`、`damage`、`healing`、`winner`、`isDraw` 與 `snapshot`，後續可直接接到真正訓練紀錄或背景 worker。
+- 目前限制：此 MVP 不包含 TensorFlow.js、DQN、模型保存或 Web Worker；模擬先在前端主執行緒完成，戰鬥規則以目前 3v3 前端規則的必要子集為準。
 
 ## 05/19: 新增更換角色上場卡牌特效
 - 觸發時機：一般對戰中，玩家回合選擇「更換」並指定可上場的備戰寶可夢後觸發；已倒下或目前出戰的卡牌不會觸發更換。
@@ -454,3 +735,10 @@ npm run build
 - 05/19: 攻擊提升倍率顯示規範：第 2、3 層倍率文字需顯示在狀態框外側，狀態框內只顯示「攻擊提升」，避免倍率文字被框線包住。
 - 05/19: 調整攻擊與防禦提升徽章視覺：第 2 層徽章內部需使用銀色底與銀色閃亮效果，第 3 層徽章內部需使用金色底與金色閃亮效果，不只改外框顏色。
 - 05/19: 新增防禦提升疊層規則：`defenseBoostTurns` 作為防禦提升層數使用，最多 2 層；第 1 層防禦倍率為 `x1.50`，第 2 層防禦倍率為 `x1.65`，受到傷害時以傷害除以防禦倍率後清空層數。
+## 05/21: v3 規則一致化單局戰術與三局兩勝策略層
+
+- 訓練 action space 擴充為技能、休息、普通攻擊、護盾、換牌，模型版本更新為 `battle-tactics-v3-rules`。
+- 訓練引擎補上普攻、泛用護盾、休息、換牌與主要傷害/狀態/特性規則，讓訓練行為更貼近一般模式。
+- Reward shaping 改為均衡戰術，提高合理換牌、休息、普攻、護盾的誘因，同時保留勝負為最高目標。
+- 一般模式套用訓練模型時，電腦可實際執行新版 action，不再只支援技能、休息、換牌。
+- 新增三局兩勝 `MatchStrategyPolicy` 架構，先以進攻/均衡/保守策略 bias 保留賽局訓練擴充點。

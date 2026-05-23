@@ -1,4 +1,5 @@
-import { AnimatePresence, motion } from "framer-motion";
+﻿import { AnimatePresence, motion } from "framer-motion";
+import AITrainingPage, { type TrainingModelApplyPayload } from "./AITrainingPage";
 import BattleLoadingPage from "./BattleLoadingPage";
 import type { Transition } from "framer-motion";
 import {
@@ -28,10 +29,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type * as tf from "@tensorflow/tfjs";
 import { pokedexPreviewCards, pokedexTotalCount } from "../data/pokedexMock";
 import { getRoleDefinition, roleDefinitions, roleOrder } from "../data/role_definitions";
 import { getAbilityDefinition, lowHpBoostAbilityTypes } from "../data/ability_definitions";
 import typeChartData from "../data/type_chart.json";
+import { LearningAgent } from "../training/learningAgent";
 import {
   calculateDamage,
   canUseSkill,
@@ -40,14 +43,18 @@ import {
   getBurnDamage,
   getPokemonById,
   getPokemonSkills,
+  getSkillById,
   getSkillStaminaCost,
   healBattleCard,
   recoverStamina,
   REST_STAMINA_RECOVERY,
   TURN_STAMINA_RECOVERY,
 } from "../utils/battleCalculator";
+import { getLegalActions } from "../utils/battleEngine";
 import type {
+  BattleAction,
   BattleCardState,
+  BattleEnvState,
   BattleParticipant,
   BattleSide,
   BattleTurnState,
@@ -58,11 +65,51 @@ import type {
   Skill,
 } from "../types/battle";
 
-type CurrentPage = "lobby" | "pokedex" | "ranked" | "normalBattle";
+type CurrentPage = "lobby" | "pokedex" | "ranked" | "normalBattle" | "aiTraining";
 type NormalBattlePhase = "normalBattleRoom" | "draftSelection" | "battleLoading" | "leadSelection" | "battleArena" | "roundResult" | "battleResult";
 type PokedexRoleFilter = "all" | PokemonRole;
 type PokedexDetailTab = "basic" | "types" | "stats" | "skills" | "evolution";
 type TypeChart = Partial<Record<PokemonType, Partial<Record<PokemonType, number>>>>;
+type ComputerDifficulty = "beginner" | "normal" | "hard" | "master" | "hell";
+type ComputerBattleMode = ComputerDifficulty | "random";
+type AppliedModelLoadStatus = "idle" | "loading" | "ready" | "error";
+
+type AppliedTrainingModel = TrainingModelApplyPayload;
+
+const APPLIED_TRAINING_MODEL_STORAGE_KEY = "pokemon-applied-training-model-v1";
+
+function loadAppliedTrainingModel(): AppliedTrainingModel | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(APPLIED_TRAINING_MODEL_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AppliedTrainingModel>;
+    if (!parsed.id || !parsed.name || !parsed.difficulty || !parsed.computerDifficulty) return null;
+    return {
+      id: parsed.id,
+      name: parsed.name,
+      difficulty: parsed.difficulty,
+      computerDifficulty: parsed.computerDifficulty,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveAppliedTrainingModel(model: AppliedTrainingModel | null) {
+  if (typeof window === "undefined") return;
+  if (!model) {
+    window.localStorage.removeItem(APPLIED_TRAINING_MODEL_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(APPLIED_TRAINING_MODEL_STORAGE_KEY, JSON.stringify(model));
+}
+
+interface TrainingModelArtifactsPayload {
+  modelTopology: tf.io.ModelJSON["modelTopology"];
+  weightSpecs: tf.io.WeightsManifestEntry[];
+  weightDataBase64: string;
+}
 
 interface BattleParticipants {
   player: BattleParticipant;
@@ -98,7 +145,7 @@ type BattleAnimationPhase = "card" | "banner" | "impact" | "ability" | "handoff"
 type BattleStartIntroPhase = "start" | "handoff";
 
 interface BattleAnimationState {
-  actionType?: "skill" | "switch" | "shield";
+  actionType?: "skill" | "switch" | "shield" | "rest";
   phase: BattleAnimationPhase;
   attackerSide: BattleSide;
   defenderSide: BattleSide;
@@ -149,6 +196,42 @@ const BATTLE_ANIMATION_HANDOFF_DURATION_MS = 1800;
 const BATTLE_ANIMATION_CLEAR_DELAY_MS = 260;
 const BATTLE_START_INTRO_START_MS = 1300;
 const BATTLE_START_INTRO_HANDOFF_MS = 1200;
+const BASIC_ATTACK_POWER = 30;
+const BASIC_ATTACK_STAMINA_COST = 10;
+const TRAINING_API_BASE = ((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_TRAINING_API_BASE ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+
+const computerDifficultyOptions: Record<ComputerDifficulty, { label: string; description: string; className: string; selectedClassName: string }> = {
+  beginner: {
+    label: "入門",
+    description: "電腦會保留較多隨機行動，適合測試隊伍。",
+    className: "border-emerald-300/35 bg-emerald-300/8 text-emerald-100 hover:border-emerald-200/65 hover:bg-emerald-300/14",
+    selectedClassName: "border-emerald-200 bg-emerald-300 text-slate-950 shadow-[0_0_26px_rgba(52,211,153,0.28)]",
+  },
+  normal: {
+    label: "中等",
+    description: "維持一般策略，會攻擊、治療與護盾。",
+    className: "border-cyan-300/35 bg-cyan-300/8 text-cyan-100 hover:border-cyan-200/65 hover:bg-cyan-300/14",
+    selectedClassName: "border-cyan-200 bg-cyan-300 text-slate-950 shadow-[0_0_26px_rgba(34,211,238,0.28)]",
+  },
+  hard: {
+    label: "困難",
+    description: "優先挑高戰力隊伍，並選擇更高傷害技能。",
+    className: "border-rose-300/35 bg-rose-300/8 text-rose-100 hover:border-rose-200/65 hover:bg-rose-300/14",
+    selectedClassName: "border-rose-200 bg-rose-300 text-slate-950 shadow-[0_0_26px_rgba(251,113,133,0.28)]",
+  },
+  master: {
+    label: "大師",
+    description: "穩定挑選頂端隊伍，更積極使用治療、護盾與高傷害技能。",
+    className: "border-orange-300/35 bg-orange-300/8 text-orange-100 hover:border-orange-200/65 hover:bg-orange-300/14",
+    selectedClassName: "border-orange-200 bg-orange-300 text-slate-950 shadow-[0_0_26px_rgba(251,146,60,0.30)]",
+  },
+  hell: {
+    label: "地獄",
+    description: "鎖定最高戰力隊伍，幾乎只選擇當下最有利的行動。",
+    className: "border-red-300/35 bg-red-300/8 text-red-100 hover:border-red-200/65 hover:bg-red-300/14",
+    selectedClassName: "border-red-200 bg-red-400 text-white shadow-[0_0_28px_rgba(248,113,113,0.34)]",
+  },
+};
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-TW").format(value);
@@ -164,6 +247,12 @@ function getPokemonLabel(pokemon: PokemonStats) {
 
 function getPokemonImage(pokemon: PokemonStats) {
   return pokedexPreviewCards.find((card) => card.id === pokemon.id)?.imagePath ?? pokemon.reference_image;
+}
+function base64ToArrayBuffer(value: string) {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes.buffer;
 }
 
 function getTypeLabel(type: PokemonStats["types"][number]) {
@@ -313,6 +402,111 @@ function getAdvantageTypes(attackerTypes: PokemonType[]) {
   );
 }
 
+function getSuperEffectiveCombos(attackerTypes: PokemonType[]) {
+  const comboKeys = new Set<string>();
+  const combos: Array<{ attackType: PokemonType; defenderTypes: [PokemonType, PokemonType] }> = [];
+
+  attackerTypes.forEach((attackType) => {
+    pokemonTypeFilterOptions.forEach((firstType, firstIndex) => {
+      pokemonTypeFilterOptions.slice(firstIndex + 1).forEach((secondType) => {
+        const multiplier = (typeChart[attackType]?.[firstType] ?? 1) * (typeChart[attackType]?.[secondType] ?? 1);
+        const comboKey = `${attackType}-${firstType}-${secondType}`;
+
+        if (multiplier >= 4 && !comboKeys.has(comboKey)) {
+          comboKeys.add(comboKey);
+          combos.push({
+            attackType,
+            defenderTypes: [firstType, secondType],
+          });
+        }
+      });
+    });
+  });
+
+  return combos;
+}
+
+function getTypeMultiplier(attackType: PokemonType, defenderTypes: PokemonType[]) {
+  return defenderTypes.reduce((total, defenderType) => total * (typeChart[attackType]?.[defenderType] ?? 1), 1);
+}
+
+function getAttackAdvantages(attackType: PokemonType) {
+  return pokemonTypeFilterOptions
+    .map((defenderType) => ({ defenderType, multiplier: getTypeMultiplier(attackType, [defenderType]) }))
+    .filter((item) => item.multiplier > 1);
+}
+
+function getBestAttackAdvantages(attackTypes: PokemonType[]) {
+  return pokemonTypeFilterOptions
+    .map((defenderType) => {
+      const best = attackTypes
+        .map((attackType) => ({ attackType, multiplier: getTypeMultiplier(attackType, [defenderType]) }))
+        .sort((left, right) => right.multiplier - left.multiplier)[0];
+      return { defenderType, attackType: best.attackType, multiplier: best.multiplier };
+    })
+    .filter((item) => item.multiplier > 1);
+}
+
+function getAttackSuperEffectiveCombos(attackType: PokemonType) {
+  const combos: Array<{ defenderTypes: [PokemonType, PokemonType]; multiplier: number }> = [];
+
+  pokemonTypeFilterOptions.forEach((firstType, firstIndex) => {
+    pokemonTypeFilterOptions.slice(firstIndex + 1).forEach((secondType) => {
+      const multiplier = getTypeMultiplier(attackType, [firstType, secondType]);
+      if (multiplier >= 4) combos.push({ defenderTypes: [firstType, secondType], multiplier });
+    });
+  });
+
+  return combos;
+}
+
+function getBestAttackSuperEffectiveCombos(attackTypes: PokemonType[]) {
+  const combos: Array<{ attackType: PokemonType; defenderTypes: [PokemonType, PokemonType]; multiplier: number }> = [];
+
+  pokemonTypeFilterOptions.forEach((firstType, firstIndex) => {
+    pokemonTypeFilterOptions.slice(firstIndex + 1).forEach((secondType) => {
+      const best = attackTypes
+        .map((attackType) => ({ attackType, multiplier: getTypeMultiplier(attackType, [firstType, secondType]) }))
+        .sort((left, right) => right.multiplier - left.multiplier)[0];
+      if (best.multiplier >= 4) combos.push({ attackType: best.attackType, defenderTypes: [firstType, secondType], multiplier: best.multiplier });
+    });
+  });
+
+  return combos;
+}
+
+function getDefensiveWeaknesses(defenderType: PokemonType) {
+  return pokemonTypeFilterOptions
+    .map((attackType) => ({ attackType, multiplier: getTypeMultiplier(attackType, [defenderType]) }))
+    .filter((item) => item.multiplier > 1);
+}
+
+function getDefensiveWeaknessesForTypes(defenderTypes: PokemonType[]) {
+  return pokemonTypeFilterOptions
+    .map((attackType) => ({ attackType, multiplier: getTypeMultiplier(attackType, defenderTypes) }))
+    .filter((item) => item.multiplier > 1);
+}
+
+function formatTypeMultiplier(multiplier: number) {
+  return `x${Number.isInteger(multiplier) ? multiplier.toFixed(0) : multiplier.toFixed(2)}`;
+}
+
+function getMultiplierTone(multiplier: number) {
+  if (multiplier >= 4) return "text-orange-100";
+  if (multiplier > 1) return "text-emerald-100";
+  if (multiplier === 0) return "text-slate-400";
+  if (multiplier < 1) return "text-sky-100";
+  return "text-white";
+}
+
+function getMultiplierLabel(multiplier: number) {
+  if (multiplier >= 4) return "超級克制";
+  if (multiplier > 1) return "克制";
+  if (multiplier === 0) return "無效";
+  if (multiplier < 1) return "效果不好";
+  return "一般";
+}
+
 function getStatPercent(value: number) {
   return `${Math.min(100, Math.max(8, Math.round((value / 180) * 100)))}%`;
 }
@@ -449,6 +643,36 @@ function createSwitchSkill(target: BattleCardState): Skill {
   };
 }
 
+function createRestSkill(card: BattleCardState): Skill {
+  return {
+    id: "rest_action",
+    name: "Rest",
+    name_zh: "休息",
+    type: card.pokemon.types[0] ?? "Normal",
+    category: "buff",
+    power: 0,
+    accuracy: 100,
+    effect: "none",
+    target: "self",
+    description_zh: "回復 40 體力並交出回合。",
+  };
+}
+
+function createBasicAttackSkill(card: BattleCardState): Skill {
+  return {
+    id: "basic_attack",
+    name: "Basic Attack",
+    name_zh: "普通攻擊",
+    type: card.pokemon.types[0] ?? "Normal",
+    category: "attack",
+    power: BASIC_ATTACK_POWER,
+    accuracy: 100,
+    effect: "none",
+    target: "enemy",
+    description_zh: "以目前出戰寶可夢的主要屬性進行基礎攻擊。",
+  };
+}
+
 function findMostInjuredLivingIndex(team: BattleCardState[]) {
   let bestIndex = -1;
   let bestMissingHp = 0;
@@ -478,19 +702,118 @@ function consumeActionBlocker(card: BattleCardState) {
   return "";
 }
 
-function chooseComputerSkill(active: BattleCardState, team: BattleCardState[]) {
+function getCpuDraftScore(pokemon: PokemonStats) {
+  return pokemon.power * 2 + pokemon.max_hp * 0.45 + pokemon.speed * 0.8 + pokemon.rarity * 18;
+}
+
+function chooseComputerDraftPokemon(availablePokemon: PokemonStats[], mode: ComputerBattleMode) {
+  if (availablePokemon.length === 0) return undefined;
+  const ranked = [...availablePokemon].sort((left, right) => getCpuDraftScore(right) - getCpuDraftScore(left));
+
+  if (mode === "hell") return ranked[0];
+  if (mode === "master") return ranked[Math.floor(Math.random() * Math.min(2, ranked.length))];
+  if (mode === "hard") return ranked[Math.floor(Math.random() * Math.min(3, ranked.length))];
+  if (mode === "beginner") {
+    const lowerHalf = ranked.slice(Math.floor(ranked.length / 2));
+    return lowerHalf[Math.floor(Math.random() * lowerHalf.length)] ?? ranked[ranked.length - 1];
+  }
+
+  return availablePokemon[Math.floor(Math.random() * availablePokemon.length)];
+}
+
+function getBestUsableAttackScore(attacker: BattleCardState, defender: BattleCardState) {
+  return getPokemonSkills(attacker.pokemon)
+    .filter((skill) => skill.category === "attack" && canUseSkill(attacker, skill))
+    .map((skill) => {
+      const result = calculateDamage(attacker.pokemon, defender.pokemon, skill);
+      return result.isHit ? result.damage * result.typeMultiplier : 0;
+    })
+    .reduce((best, score) => Math.max(best, score), 0);
+}
+
+function getComputerSwitchMargin(mode: ComputerBattleMode) {
+  if (mode === "hell") return 10;
+  if (mode === "master") return 14;
+  if (mode === "hard") return 20;
+  if (mode === "normal") return 26;
+  return 999;
+}
+
+function chooseComputerSwitchIndex(participant: BattleParticipant, opponentActive: BattleCardState, mode: ComputerBattleMode) {
+  if (mode === "random" || mode === "beginner") return -1;
+
+  const active = participant.team[participant.activeIndex];
+  if (!active || active.currentHp <= 0) return -1;
+
+  const activeHpRatio = active.currentHp / active.pokemon.max_hp;
+  const activeAttackScore = getBestUsableAttackScore(active, opponentActive);
+  const activeThreatScore = getBestUsableAttackScore(opponentActive, active);
+  const activeBattleScore = activeAttackScore - activeThreatScore * 0.55 + activeHpRatio * 28;
+
+  const candidates = participant.team
+    .map((card, index) => {
+      const hpRatio = card.currentHp / card.pokemon.max_hp;
+      const attackScore = getBestUsableAttackScore(card, opponentActive);
+      const threatScore = getBestUsableAttackScore(opponentActive, card);
+      return {
+        index,
+        attackScore,
+        hpRatio,
+        score: attackScore - threatScore * 0.55 + hpRatio * 28 + card.pokemon.speed * 0.04,
+      };
+    })
+    .filter((candidate) => candidate.index !== participant.activeIndex && participant.team[candidate.index].currentHp > 0)
+    .sort((left, right) => right.score - left.score);
+
+  const best = candidates[0];
+  if (!best) return -1;
+
+  const margin = getComputerSwitchMargin(mode);
+  const noUsableAttack = activeAttackScore <= 0 && best.attackScore > 0;
+  const lowHpEscape = activeHpRatio <= 0.32 && best.hpRatio >= activeHpRatio + 0.18 && best.score >= activeBattleScore + 8;
+  const betterMatchup = best.attackScore >= activeAttackScore + margin && best.score >= activeBattleScore + margin;
+  const badCurrentMatchup = activeAttackScore < 22 && best.attackScore >= activeAttackScore + 18;
+
+  return noUsableAttack || lowHpEscape || betterMatchup || badCurrentMatchup ? best.index : -1;
+}
+
+function chooseComputerSkill(active: BattleCardState, team: BattleCardState[], opponentActive: BattleCardState, mode: ComputerBattleMode) {
   const skills = getPokemonSkills(active.pokemon).filter((skill) => canUseSkill(active, skill));
+  if (skills.length === 0) return undefined;
+
+  if (mode === "random") return skills[Math.floor(Math.random() * skills.length)];
+
+  if (mode === "beginner") {
+    if (Math.random() < 0.28) return undefined;
+    return skills[Math.floor(Math.random() * skills.length)];
+  }
+
   const healSkill = skills.find((skill) => skill.category === "heal" && skill.target === "ally");
   const mostInjuredIndex = findMostInjuredLivingIndex(team);
   const mostInjured = mostInjuredIndex >= 0 ? team[mostInjuredIndex] : undefined;
 
-  if (healSkill && mostInjured && mostInjured.pokemon.max_hp - mostInjured.currentHp >= Math.round(mostInjured.pokemon.max_hp * 0.18)) {
+  const healThreshold = mode === "hell" ? 0.08 : mode === "master" ? 0.1 : mode === "hard" ? 0.12 : 0.18;
+  if (healSkill && mostInjured && mostInjured.pokemon.max_hp - mostInjured.currentHp >= Math.round(mostInjured.pokemon.max_hp * healThreshold)) {
     return healSkill;
   }
 
   const shieldSkill = skills.find((skill) => skill.category === "shield");
-  if (shieldSkill && active.currentHp <= active.pokemon.max_hp / 2 && (active.shieldTurns ?? 0) <= 0) {
+  const shieldThreshold = mode === "hell" ? 0.72 : mode === "master" ? 0.68 : mode === "hard" ? 0.62 : 0.5;
+  if (shieldSkill && active.currentHp <= active.pokemon.max_hp * shieldThreshold && (active.shieldTurns ?? 0) <= 0) {
     return shieldSkill;
+  }
+
+  if (mode === "hard" || mode === "master" || mode === "hell") {
+    const attackSkills = skills.filter((skill) => skill.category === "attack");
+    const bestAttack = attackSkills
+      .map((skill) => ({ skill, result: calculateDamage(active.pokemon, opponentActive.pokemon, skill) }))
+      .sort((left, right) => {
+        const leftScore = left.result.isHit ? left.result.damage * left.result.typeMultiplier : 0;
+        const rightScore = right.result.isHit ? right.result.damage * right.result.typeMultiplier : 0;
+        return rightScore - leftScore;
+      })[0]?.skill;
+
+    if (bestAttack) return bestAttack;
   }
 
   return skills.find((item) => item.category === "attack") ?? skills[0];
@@ -772,6 +1095,7 @@ function TopBar({ activePanel, onSelect }: { activePanel: LobbyContentKey; onSel
 function HeroPanel({ activePanel }: { activePanel: LobbyContentKey }) {
   const content = lobbyContent[activePanel];
   const Icon = content.icon;
+  const isTypeGuide = activePanel === "typeGuide";
 
   return (
     <main className="min-h-0 min-w-0 xl:col-start-2 xl:row-start-2">
@@ -779,6 +1103,9 @@ function HeroPanel({ activePanel }: { activePanel: LobbyContentKey }) {
         <div className="arena-grid pointer-events-none absolute inset-0 opacity-50" />
         <div className="pointer-events-none absolute -left-24 top-16 h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" />
         <div className="pointer-events-none absolute -right-24 bottom-10 h-80 w-80 rounded-full bg-rose-500/16 blur-3xl" />
+        {isTypeGuide ? (
+          <TypeMatchupPanel />
+        ) : (
         <div className="relative z-10 grid h-full min-h-0 gap-5 lg:grid-cols-[1fr_340px]">
           <div className="flex min-h-0 flex-col justify-between">
             <AnimatePresence mode="wait">
@@ -813,8 +1140,173 @@ function HeroPanel({ activePanel }: { activePanel: LobbyContentKey }) {
           </div>
           {activePanel === "dex" ? <PokedexPreview /> : <SquadPreview />}
         </div>
+        )}
       </section>
     </main>
+  );
+}
+
+function TypeChip({ type }: { type: PokemonType }) {
+  return (
+    <span className={["inline-flex min-h-8 min-w-14 items-center justify-center rounded-full border px-3 text-xs font-black shadow-[0_0_10px_rgba(255,255,255,0.12)]", getTypeChipClass(type)].join(" ")}>
+      {getTypeLabel(type)}
+    </span>
+  );
+}
+
+function TypeResultGroup({
+  title,
+  tone,
+  children,
+}: {
+  title: string;
+  tone: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-slate-700/75 bg-slate-950/58">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+        <h3 className="text-sm font-black text-white">{title}</h3>
+        <span className={["h-2.5 w-2.5 rounded-full shadow-[0_0_14px_currentColor]", tone].join(" ")} />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
+    </section>
+  );
+}
+
+function TypeMatchupPanel() {
+  const [attackTypes, setAttackTypes] = useState<PokemonType[]>(["Fire"]);
+  const attackAdvantages = useMemo(() => getBestAttackAdvantages(attackTypes), [attackTypes]);
+  const superCombos = useMemo(() => getBestAttackSuperEffectiveCombos(attackTypes), [attackTypes]);
+  const defensiveWeaknesses = useMemo(() => getDefensiveWeaknessesForTypes(attackTypes), [attackTypes]);
+
+  const toggleAttackType = (type: PokemonType) => {
+    setAttackTypes((current) => {
+      if (current.includes(type)) return current.length === 1 ? current : current.filter((item) => item !== type);
+      return current.length >= 2 ? [current[1], type] : [...current, type];
+    });
+  };
+
+  return (
+    <div className="relative z-10 grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4">
+      <motion.div key="type-guide-heading" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }} className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="inline-flex items-center gap-3 rounded-full border border-yellow-200/30 bg-yellow-300/10 px-3 py-1.5 text-xs font-black text-yellow-100">
+            <RadioTower size={16} />
+            TYPE CHART
+          </div>
+          <h1 className="mt-3 text-4xl font-black leading-none text-white 2xl:text-5xl">屬性克制</h1>
+          <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-300">選擇 1 到 2 個攻擊端屬性，下方會列出可克制的防守屬性與雙屬性組合。</p>
+        </div>
+        <div className="rounded-[20px] border border-slate-700/75 bg-slate-950/62 p-3 text-right">
+          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Attack Types</p>
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5">
+            {attackTypes.map((type, index) => (
+              <span key={type} className="inline-flex items-center gap-1.5">
+                {index > 0 && <span className="text-xs font-black text-slate-500">/</span>}
+                <TypeChip type={type} />
+              </span>
+            ))}
+          </div>
+          <p className="mt-2 text-sm font-black text-slate-400">下方顯示防守端結果</p>
+        </div>
+      </motion.div>
+
+      <div className="grid min-h-0 gap-3">
+        <section className="rounded-[22px] border border-slate-700/70 bg-slate-950/42 p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-500">攻擊屬性（最多 2 個）</p>
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {attackTypes.map((type) => <TypeChip key={type} type={type} />)}
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-wrap gap-2">
+            {pokemonTypeFilterOptions.map((type) => {
+              const selected = attackTypes.includes(type);
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => toggleAttackType(type)}
+                  className={[
+                    "min-h-10 rounded-full border px-3 text-xs font-black transition hover:-translate-y-0.5",
+                    selected ? `${getTypeChipClass(type)} shadow-[0_0_20px_rgba(255,255,255,0.18)] ring-2 ring-white/45` : "border-slate-700 bg-slate-950/68 text-slate-300 hover:border-slate-500",
+                  ].join(" ")}
+                >
+                  {getTypeLabel(type)}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+
+      <div className="grid min-h-0 gap-3 lg:grid-cols-3">
+        <TypeResultGroup title="超級克制" tone="bg-orange-300 text-orange-300">
+          {superCombos.length > 0 ? (
+            <div className="grid gap-2">
+              {superCombos.map((combo) => (
+                <div key={`${combo.attackType}-${combo.defenderTypes[0]}-${combo.defenderTypes[1]}`} className="flex items-center justify-between gap-3 rounded-2xl border border-orange-300/18 bg-orange-300/8 px-3 py-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <TypeChip type={combo.attackType} />
+                    <span className="text-xs font-black text-slate-500">→</span>
+                    <TypeChip type={combo.defenderTypes[0]} />
+                    <span className="text-xs font-black text-slate-500">/</span>
+                    <TypeChip type={combo.defenderTypes[1]} />
+                  </div>
+                  <span className="shrink-0 text-sm font-black text-orange-100">{formatTypeMultiplier(combo.multiplier)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-slate-800 bg-slate-900/62 px-3 py-4 text-center text-sm font-black text-slate-500">無</p>
+          )}
+        </TypeResultGroup>
+
+        <TypeResultGroup title="克制" tone="bg-emerald-300 text-emerald-300">
+          {attackAdvantages.length > 0 ? (
+            <div className="grid gap-2">
+              {attackAdvantages.map((item) => (
+                <div key={`${item.attackType}-${item.defenderType}`} className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-300/18 bg-emerald-300/8 px-3 py-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <TypeChip type={item.attackType} />
+                    <span className="text-xs font-black text-slate-500">→</span>
+                    <TypeChip type={item.defenderType} />
+                  </div>
+                  <span className="text-sm font-black text-emerald-100">{formatTypeMultiplier(item.multiplier)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-slate-800 bg-slate-900/62 px-3 py-4 text-center text-sm font-black text-slate-500">無</p>
+          )}
+        </TypeResultGroup>
+
+        <TypeResultGroup title="被剋" tone="bg-rose-300 text-rose-300">
+          {defensiveWeaknesses.length > 0 ? (
+            <div className="grid gap-2">
+              {defensiveWeaknesses.map((item) => (
+                <div key={item.attackType} className="flex items-center justify-between gap-3 rounded-2xl border border-rose-300/18 bg-rose-300/8 px-3 py-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <TypeChip type={item.attackType} />
+                    <span className="text-xs font-black text-slate-500">→</span>
+                    {attackTypes.map((type, index) => (
+                      <span key={type} className="inline-flex items-center gap-1.5">
+                        {index > 0 && <span className="text-xs font-black text-slate-500">/</span>}
+                        <TypeChip type={type} />
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-sm font-black text-rose-100">{formatTypeMultiplier(item.multiplier)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-slate-800 bg-slate-900/62 px-3 py-4 text-center text-sm font-black text-slate-500">無</p>
+          )}
+        </TypeResultGroup>
+      </div>
+    </div>
   );
 }
 
@@ -978,31 +1470,119 @@ function BattleModeSheet({
     </AnimatePresence>
   );
 }
+function TrainingChoiceSheet({
+  open,
+  onClose,
+  onSelectTactics,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSelectTactics: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="fixed inset-0 z-50 bg-slate-950/42 backdrop-blur-md"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ x: -18, opacity: 0, scale: 0.98 }}
+            animate={{ x: 0, opacity: 1, scale: 1 }}
+            exit={{ x: -18, opacity: 0, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 280, damping: 26 }}
+            className="absolute left-4 top-1/2 grid w-[min(360px,calc(100vw-32px))] -translate-y-1/2 gap-3 xl:left-[226px]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={onSelectTactics}
+              className="group relative min-h-28 overflow-hidden rounded-[24px] border border-cyan-300/45 bg-slate-950/86 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.36)] transition hover:border-cyan-200 hover:bg-cyan-300/12"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <span className="grid size-12 place-items-center rounded-2xl border border-cyan-300/30 bg-cyan-300/10 text-cyan-100">
+                  <Cpu size={23} />
+                </span>
+                <ChevronRight className="text-slate-500 transition group-hover:text-cyan-100" size={24} />
+              </div>
+              <h3 className="mt-4 text-2xl font-black text-white">單局戰術訓練</h3>
+              <p className="mt-2 text-sm font-bold leading-6 text-slate-400">管理模型並進入 AI 對戰訓練。</p>
+            </button>
+
+            <button
+              type="button"
+              disabled
+              className="relative min-h-28 overflow-hidden rounded-[24px] border border-slate-700/80 bg-slate-950/70 p-5 text-left opacity-70 shadow-[0_24px_80px_rgba(0,0,0,0.24)]"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <span className="grid size-12 place-items-center rounded-2xl border border-slate-700 bg-slate-900 text-slate-400">
+                  <Trophy size={23} />
+                </span>
+                <span className="rounded-full border border-slate-700 px-3 py-1 text-xs font-black text-slate-500">保留</span>
+              </div>
+              <h3 className="mt-4 text-2xl font-black text-slate-300">賽局策略訓練</h3>
+              <p className="mt-2 text-sm font-bold leading-6 text-slate-500">之後接三回合兩勝制與跨局策略。</p>
+            </button>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function getInitialPageFromUrl(): CurrentPage {
+  if (typeof window === "undefined") return "lobby";
+  const params = new URLSearchParams(window.location.search);
+  const page = params.get("page") ?? window.location.hash.replace(/^#\/?/, "");
+  return page === "training" || page === "aiTraining" ? "aiTraining" : "lobby";
+}
 
 export default function LobbyPage() {
   const [activePanel, setActivePanel] = useState<LobbyContentKey>("dex");
-  const [currentPage, setCurrentPage] = useState<CurrentPage>("lobby");
+  const [currentPage, setCurrentPage] = useState<CurrentPage>(() => getInitialPageFromUrl());
   const [isBattleModeSheetOpen, setIsBattleModeSheetOpen] = useState(false);
+  const [isTrainingChoiceOpen, setIsTrainingChoiceOpen] = useState(false);
+  const [appliedTrainingModel, setAppliedTrainingModel] = useState<AppliedTrainingModel | null>(() => loadAppliedTrainingModel());
   const mobileNav = useMemo(() => [...leftNav, ...rightNav], []);
 
   const handleSelectPanel = (panel: LobbyContentKey) => {
     setIsBattleModeSheetOpen(false);
     setActivePanel(panel);
     if (panel === "dex") setCurrentPage("pokedex");
+    if (panel === "training") setIsTrainingChoiceOpen(true);
   };
 
   const handleBackToLobby = () => {
     setCurrentPage("lobby");
     setIsBattleModeSheetOpen(false);
+    setIsTrainingChoiceOpen(false);
+  };
+
+  const handleApplyTrainingModel = (payload: TrainingModelApplyPayload) => {
+    saveAppliedTrainingModel(payload);
+    setAppliedTrainingModel(payload);
+  };
+
+  const handleRemoveAppliedTrainingModel = () => {
+    saveAppliedTrainingModel(null);
+    setAppliedTrainingModel(null);
   };
 
   if (currentPage === "pokedex") return <PokedexPage onBack={handleBackToLobby} />;
   if (currentPage === "ranked") return <RankedBattlePage onBack={handleBackToLobby} />;
-  if (currentPage === "normalBattle") return <NormalBattlePage onBack={handleBackToLobby} />;
+  if (currentPage === "normalBattle") {
+    return <NormalBattlePage onBack={handleBackToLobby} appliedTrainingModel={appliedTrainingModel} />;
+  }
+  if (currentPage === "aiTraining") {
+    return <AITrainingPage onBack={handleBackToLobby} initialScreen="tacticsList" appliedModelId={appliedTrainingModel?.id} onApplyTrainingModel={handleApplyTrainingModel} onRemoveAppliedTrainingModel={handleRemoveAppliedTrainingModel} />;
+  }
 
   return (
     <div className="h-screen overflow-hidden px-3 py-3 text-slate-100">
-      <div className="grid h-full min-h-0 gap-3 xl:grid-cols-[210px_minmax(0,1fr)_210px] xl:grid-rows-[76px_minmax(0,1fr)_86px]">
+      <div className={["grid h-full min-h-0 gap-3 transition duration-200 xl:grid-cols-[210px_minmax(0,1fr)_210px] xl:grid-rows-[76px_minmax(0,1fr)_86px]", isTrainingChoiceOpen ? "blur-[2px]" : ""].join(" ")}>
         <TopBar activePanel={activePanel} onSelect={handleSelectPanel} />
         <SideRail items={leftNav} activePanel={activePanel} onSelect={handleSelectPanel} side="left" />
         <HeroPanel activePanel={activePanel} />
@@ -1026,6 +1606,14 @@ export default function LobbyPage() {
         </footer>
       </div>
       <BattleModeSheet open={isBattleModeSheetOpen} onClose={() => setIsBattleModeSheetOpen(false)} onSelect={(page) => setCurrentPage(page)} />
+      <TrainingChoiceSheet
+        open={isTrainingChoiceOpen}
+        onClose={() => setIsTrainingChoiceOpen(false)}
+        onSelectTactics={() => {
+          setIsTrainingChoiceOpen(false);
+          setCurrentPage("aiTraining");
+        }}
+      />
     </div>
   );
 }
@@ -1315,6 +1903,7 @@ function BattleStandbyBroadcast({ message, hidden = false }: { message: string; 
 
 function getEffectText(typeMultiplier: number, isHit: boolean) {
   if (!isHit) return "沒有命中！";
+  if (typeMultiplier >= 4) return "超級克制！";
   if (typeMultiplier >= 2) return "效果絕佳！";
   if (typeMultiplier === 0) return "沒有效果";
   if (typeMultiplier < 1) return "效果不好...";
@@ -1330,7 +1919,9 @@ function getTimelineEffectText(animation: BattleAnimationState) {
 function getTimelineEffectClass(animation: BattleAnimationState) {
   if (animation.actionType === "switch") return "text-cyan-100 drop-shadow-[0_0_18px_rgba(34,211,238,0.46)]";
   if (animation.actionType === "shield") return "text-cyan-100 drop-shadow-[0_0_20px_rgba(34,211,238,0.56)]";
+  if (animation.actionType === "rest") return "text-sky-100 drop-shadow-[0_0_20px_rgba(125,211,252,0.56)]";
   if (!animation.isHit || animation.typeMultiplier === 0) return "text-slate-200 drop-shadow-[0_0_18px_rgba(148,163,184,0.45)]";
+  if (animation.typeMultiplier >= 4) return "text-orange-200 drop-shadow-[0_0_26px_rgba(251,146,60,0.88)]";
   if (animation.typeMultiplier >= 2) return "text-amber-200 drop-shadow-[0_0_22px_rgba(251,191,36,0.72)]";
   if (animation.typeMultiplier < 1) return "text-sky-200 drop-shadow-[0_0_18px_rgba(125,211,252,0.46)]";
   return "text-white drop-shadow-[0_0_18px_rgba(255,255,255,0.42)]";
@@ -1420,6 +2011,7 @@ function BattleActionTimelineOverlay({ animation }: { animation: BattleAnimation
   const skillName = animation.skill.name_zh || animation.skill.name;
   const isSwitchAction = animation.actionType === "switch";
   const isShieldAction = animation.actionType === "shield";
+  const isRestAction = animation.actionType === "rest";
   const actionTitle = animation.actionTitle ?? `${animation.attackerName} 使用 ${skillName}！`;
   const actionSubtitle = animation.actionSubtitle ?? (isSwitchAction ? battleUiText.chooseSwitchTarget : "Skill Locked");
   const timelineEffectText = getTimelineEffectText(animation);
@@ -1489,12 +2081,12 @@ function BattleActionTimelineOverlay({ animation }: { animation: BattleAnimation
                     </div>
                   </div>
                 </>
-              ) : isShieldAction ? (
+              ) : isShieldAction || isRestAction ? (
                 <>
                   <p className="text-xs font-black uppercase tracking-[0.26em] text-cyan-100">{actionSubtitle}</p>
                   <h2 className="mt-3 text-3xl font-black text-white">{skillName}</h2>
                   <div className="mt-5 rounded-2xl border border-cyan-300/35 bg-cyan-300/10 px-4 py-3 text-sm font-black text-cyan-100">
-                    {animation.effectLabel ?? battleUiText.shieldReduction}
+                    {animation.effectLabel ?? (isShieldAction ? battleUiText.shieldReduction : battleUiText.restHint)}
                   </div>
                 </>
               ) : (
@@ -1836,7 +2428,6 @@ function BattleCardDeck({
   canSwitch = false,
   canTargetAlly = false,
   activeShielded = false,
-  hideActive = false,
   onSwitch,
   onAllyTarget,
 }: {
@@ -1847,15 +2438,13 @@ function BattleCardDeck({
   canSwitch?: boolean;
   canTargetAlly?: boolean;
   activeShielded?: boolean;
-  hideActive?: boolean;
   onSwitch?: (index: number) => void;
   onAllyTarget?: (index: number) => void;
 }) {
   return (
-    <aside className="flex h-full min-h-0 items-end justify-center gap-3 overflow-visible">
+    <aside className="grid h-[224px] max-h-full min-h-0 grid-cols-3 items-end gap-2 overflow-visible">
       {participant.team.map((card, index) => {
         const active = index === activeIndex;
-        if (hideActive && active) return null;
         const defeated = card.currentHp <= 0;
         const selectableTarget = canTargetAlly && !defeated;
         const switchable = canSwitch && !active && !defeated;
@@ -1874,10 +2463,9 @@ function BattleCardDeck({
             onClick={() => {
               if (selectableTarget) onAllyTarget?.(index);
             }}
-            style={{ width: 112, flex: "0 0 112px" }}
             className={[
-              "group relative min-h-0 text-left transition",
-              active ? "-translate-y-4" : "",
+              "group relative min-h-0 w-full text-left transition",
+              active ? "-translate-y-3" : "",
               selectableTarget ? "hover:-translate-y-2" : "cursor-default",
             ].join(" ")}
           >
@@ -2134,6 +2722,7 @@ function CenterActionPanel({
   pendingAllySkill,
   pendingSwitchTarget,
   onSkill,
+  onBasicAttack,
   onShield,
   onRest,
   onSwitchPrompt,
@@ -2146,23 +2735,53 @@ function CenterActionPanel({
   pendingAllySkill: PendingAllySkill | null;
   pendingSwitchTarget: PendingSwitchTarget | null;
   onSkill: (skill: Skill) => void;
+  onBasicAttack: () => void;
   onShield: () => void;
   onRest: () => void;
   onSwitchPrompt: () => void;
   onCancelAllyTarget: () => void;
 }) {
-  const hasUsableSkill = playerSkills.some((skill) => canUseSkill(activeCard, skill));
+  const canUseBasicAttack = activeCard.currentHp > 0 && activeCard.currentStamina >= BASIC_ATTACK_STAMINA_COST;
+  const actionBlocked = !playerCanAct || Boolean(pendingAllySkill) || Boolean(pendingSwitchTarget);
+
   return (
-    <div className="flex h-[184px] max-h-full min-h-0 min-w-0 flex-col gap-2 overflow-visible">
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_180px] gap-3 overflow-visible">
-        <div className="grid min-h-0 min-w-0 grid-cols-2 grid-rows-2 gap-3 overflow-visible">
+    <div className="relative grid h-[224px] max-h-full min-h-0 min-w-0 grid-cols-[190px_minmax(0,1fr)_190px] gap-3 overflow-visible">
+      <div className="grid min-h-0 grid-rows-2 gap-3 overflow-visible">
+        <motion.button
+          type="button"
+          disabled={actionBlocked}
+          onClick={onSwitchPrompt}
+          className="h-full rounded-2xl border border-slate-600/80 bg-slate-900/75 px-3 text-left transition hover:border-cyan-300/40 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-black text-white">{battleUiText.switchCard}</p>
+            <ChevronRight className="text-cyan-100" size={18} />
+          </div>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{battleUiText.switchHint}</p>
+        </motion.button>
+
+        <motion.button
+          type="button"
+          disabled={actionBlocked}
+          onClick={onRest}
+          className="h-full rounded-2xl border border-sky-300/35 bg-sky-300/10 px-3 text-left transition hover:border-sky-200/60 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-black text-white">{battleUiText.rest}</p>
+            <BatteryCharging className="text-cyan-100" size={18} />
+          </div>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{battleUiText.restHint}</p>
+        </motion.button>
+      </div>
+
+      <div className="grid min-h-0 grid-cols-2 grid-rows-2 gap-3 overflow-visible">
           {playerSkills.slice(0, 4).map((skill, index) => {
             const tooltipHorizontalClass = index % 2 === 0 ? "left-0" : "right-0";
             const staminaCost = getSkillStaminaCost(skill);
             const hasStamina = canUseSkill(activeCard, skill);
 
             return (
-              <div key={skill.id} className="group relative min-h-[78px] overflow-visible">
+              <div key={skill.id} className="group relative min-h-0 overflow-visible">
                 <motion.button
                   type="button"
                   disabled={!playerCanAct || Boolean(pendingAllySkill) || Boolean(pendingSwitchTarget) || !hasStamina}
@@ -2195,36 +2814,38 @@ function CenterActionPanel({
               </div>
             );
           })}
-        </div>
+          {playerSkills.length === 0 && <p className="col-span-2 row-span-2 grid place-items-center rounded-2xl border border-slate-700/80 bg-slate-950/70 text-xs font-black text-slate-500">沒有可用技能</p>}
+      </div>
 
-        <div className="grid h-full w-[180px] min-w-[180px] grid-rows-2 gap-3">
-          <>
-              <motion.button
-                type="button"
-                disabled={!playerCanAct || (playerShielded && !pendingAllySkill && !pendingSwitchTarget)}
-                onClick={pendingAllySkill ? onCancelAllyTarget : onShield}
-                className="h-full rounded-2xl border border-cyan-300/35 bg-cyan-300/10 px-3 text-left transition hover:border-cyan-200/60 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-black text-white">{pendingAllySkill ? battleUiText.cancelTarget : pendingSwitchTarget ? battleUiText.cancelSwitch : battleUiText.shield}</p>
-                  <Shield className="text-cyan-100" size={18} />
-                </div>
-                <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{pendingAllySkill ? battleUiText.chooseAllyHint : pendingSwitchTarget ? (pendingSwitchTarget.forced ? battleUiText.chooseForcedSwitchTarget : battleUiText.chooseSwitchHint) : battleUiText.shieldReduction}</p>
-              </motion.button>
-              <motion.button
-                type="button"
-                disabled={!playerCanAct || Boolean(pendingAllySkill) || Boolean(pendingSwitchTarget)}
-                onClick={!hasUsableSkill && !pendingAllySkill ? onRest : onSwitchPrompt}
-                className="h-full rounded-2xl border border-slate-600/80 bg-slate-900/75 px-3 text-left transition hover:border-cyan-300/40 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-black text-white">{!hasUsableSkill && !pendingAllySkill ? battleUiText.rest : battleUiText.switchCard}</p>
-                  {!hasUsableSkill && !pendingAllySkill ? <BatteryCharging className="text-cyan-100" size={18} /> : <ChevronRight className="text-cyan-100" size={18} />}
-                </div>
-                <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{!hasUsableSkill && !pendingAllySkill ? battleUiText.restHint : battleUiText.switchHint}</p>
-              </motion.button>
-            </>
-        </div>
+      <div className="grid min-h-0 grid-rows-2 gap-3 overflow-visible">
+        <motion.button
+          type="button"
+          disabled={actionBlocked || !canUseBasicAttack}
+          onClick={onBasicAttack}
+          className="h-full rounded-2xl border border-orange-300/35 bg-orange-300/10 px-3 text-left transition hover:border-orange-200/60 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-black text-white">普通攻擊</p>
+            <Swords className="text-orange-100" size={18} />
+          </div>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">
+            威力 {BASIC_ATTACK_POWER} / 體力 {BASIC_ATTACK_STAMINA_COST}
+          </p>
+          {!canUseBasicAttack && <p className="mt-1 text-[10px] font-black text-rose-200">{battleUiText.staminaInsufficient}</p>}
+        </motion.button>
+
+        <motion.button
+          type="button"
+          disabled={!playerCanAct || (playerShielded && !pendingAllySkill && !pendingSwitchTarget)}
+          onClick={pendingAllySkill ? onCancelAllyTarget : onShield}
+          className="h-full rounded-2xl border border-cyan-300/35 bg-cyan-300/10 px-3 text-left transition hover:border-cyan-200/60 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-black text-white">{pendingAllySkill ? battleUiText.cancelTarget : pendingSwitchTarget ? battleUiText.cancelSwitch : battleUiText.shield}</p>
+            <Shield className="text-cyan-100" size={18} />
+          </div>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{pendingAllySkill ? battleUiText.chooseAllyHint : pendingSwitchTarget ? (pendingSwitchTarget.forced ? battleUiText.chooseForcedSwitchTarget : battleUiText.chooseSwitchHint) : battleUiText.shieldReduction}</p>
+        </motion.button>
       </div>
     </div>
   );
@@ -2408,7 +3029,13 @@ function SwitchTargetOverlay({
   );
 }
 
-function NormalBattlePage({ onBack }: { onBack: () => void }) {
+function NormalBattlePage({
+  onBack,
+  appliedTrainingModel,
+}: {
+  onBack: () => void;
+  appliedTrainingModel: AppliedTrainingModel | null;
+}) {
   const availablePokemon = useMemo(() => getBattleEnabledPokemon(), []);
   const [phase, setPhase] = useState<NormalBattlePhase>("normalBattleRoom");
   const [currentPicker, setCurrentPicker] = useState<DraftPickSide>("player");
@@ -2452,6 +3079,8 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
   const battleStartIntroTimerRefs = useRef<number[]>([]);
   const cpuLeadLockTimerRef = useRef<number | null>(null);
   const leadRevealTimerRef = useRef<number | null>(null);
+  const appliedModelAgentRef = useRef<LearningAgent | null>(null);
+  const [appliedModelLoadStatus, setAppliedModelLoadStatus] = useState<AppliedModelLoadStatus>("idle");
   const scoreText = `玩家 ${roundWins.player} - ${roundWins.computer} 電腦`;
   const roundText = `第 ${currentRound} 局`;
 
@@ -2473,6 +3102,46 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
   const teamsReady = playerDraftIds.length >= REQUIRED_TEAM_SIZE && computerDraftIds.length >= REQUIRED_TEAM_SIZE;
   const pendingPlayerPick = pendingPlayerPickId ? getPokemonById(pendingPlayerPickId) : undefined;
   const pendingComputerPick = pendingComputerPickId ? getPokemonById(pendingComputerPickId) : undefined;
+  const computerBattleMode: ComputerBattleMode = appliedTrainingModel?.computerDifficulty ?? "random";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAppliedModel() {
+      if (!appliedTrainingModel) {
+        appliedModelAgentRef.current = null;
+        setAppliedModelLoadStatus("idle");
+        return;
+      }
+
+      setAppliedModelLoadStatus("loading");
+      try {
+        const response = await fetch(`${TRAINING_API_BASE}/api/training/models/${encodeURIComponent(appliedTrainingModel.id)}/artifacts`);
+        if (!response.ok) throw new Error("無法讀取已保存的訓練模型權重。");
+        const payload = (await response.json()) as TrainingModelArtifactsPayload;
+        const agent = new LearningAgent();
+        await agent.importArtifacts({
+          modelTopology: payload.modelTopology,
+          weightSpecs: payload.weightSpecs,
+          weightData: base64ToArrayBuffer(payload.weightDataBase64),
+        } as tf.io.ModelArtifacts);
+        agent.epsilon = 0;
+        if (cancelled) return;
+        appliedModelAgentRef.current = agent;
+        setAppliedModelLoadStatus("ready");
+      } catch (error) {
+        if (cancelled) return;
+        console.warn("[normal-battle] 訓練模型載入失敗，改用難度規則。", error);
+        appliedModelAgentRef.current = null;
+        setAppliedModelLoadStatus("error");
+      }
+    }
+
+    void loadAppliedModel();
+    return () => {
+      cancelled = true;
+    };
+  }, [appliedTrainingModel]);
 
   const clearBattleAnimationTimers = useCallback(() => {
     battleAnimationTimerRefs.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -2612,7 +3281,7 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
       const nextPlayerIds = [...playerDraftIds, pendingId];
       const nextPickedIds = [...globalPickedIds, pendingId];
       const availableForCpu = draftPool.filter((pokemon) => !nextPickedIds.includes(pokemon.id));
-      const selectedCpuPokemon = availableForCpu[Math.floor(Math.random() * availableForCpu.length)];
+      const selectedCpuPokemon = chooseComputerDraftPokemon(availableForCpu, computerBattleMode);
 
       setPlayerDraftIds(nextPlayerIds);
       setGlobalPickedIds(nextPickedIds);
@@ -2645,7 +3314,7 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
         }
       }, (DRAFT_SECONDS - CPU_PICK_LOCK_SECONDS) * 1000);
     },
-    [computerDraftIds, currentPicker, draftPool, globalPickedIds, pendingPlayerPickId, playerDraftIds],
+    [computerBattleMode, computerDraftIds, currentPicker, draftPool, globalPickedIds, pendingPlayerPickId, playerDraftIds],
   );
 
   const openDraftTypeFilterDialog = () => {
@@ -2856,9 +3525,29 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     if (phase !== "battleArena" || winner || turn.locked || turn.attacker !== "computer" || battleAnimation || !participants) return;
+    if (appliedTrainingModel && appliedModelLoadStatus === "loading") return;
     const timer = window.setTimeout(() => {
       const active = participants.computer.team[participants.computer.activeIndex];
-      const skill = chooseComputerSkill(active, participants.computer.team);
+      const opponentActive = participants.player.team[participants.player.activeIndex];
+      const modelAgent = appliedModelAgentRef.current;
+      const modelState = buildComputerBattleState();
+      if (modelAgent && modelState) {
+        const legalActions = getLegalActions(modelState, "computer");
+        const selectedAction = modelAgent.selectAction(modelState, legalActions);
+        const legalAction = legalActions.find((action) => JSON.stringify(action) === JSON.stringify(selectedAction)) ?? legalActions[0];
+        if (legalAction) {
+          executeComputerModelAction(legalAction);
+          return;
+        }
+      }
+
+      const switchIndex = chooseComputerSwitchIndex(participants.computer, opponentActive, computerBattleMode);
+      if (switchIndex >= 0) {
+        switchComputerPokemon(switchIndex);
+        return;
+      }
+
+      const skill = chooseComputerSkill(active, participants.computer.team, opponentActive, computerBattleMode);
       if (skill) {
         resolveSkill(skill, "computer");
         return;
@@ -2866,7 +3555,7 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
       restBattleTurn("computer");
     }, COMPUTER_ACTION_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [battleAnimation, participants, phase, turn.attacker, turn.locked, winner]);
+  }, [appliedModelLoadStatus, appliedTrainingModel, battleAnimation, computerBattleMode, participants, phase, turn.attacker, turn.locked, winner]);
 
   useEffect(() => {
     if (phase !== "battleArena" || winner || turn.locked || turn.attacker !== "player" || turn.secondsLeft > 0 || !participants) return;
@@ -3133,7 +3822,7 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
     });
   }
 
-  function resolveSkill(skill: Skill, source: "manual" | "computer", allyTargetIndex?: number) {
+  function resolveSkill(skill: Skill, source: "manual" | "computer", allyTargetIndex?: number, options?: { staminaCostOverride?: number }) {
     if (!participants || turn.locked || winner) return;
     const attackerSide = source === "computer" ? "computer" : turn.attacker;
     const defenderSide: BattleSide = attackerSide === "player" ? "computer" : "player";
@@ -3141,9 +3830,9 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
     const defenderParticipant = participants[defenderSide];
     const attackerCard = attackerParticipant.team[attackerParticipant.activeIndex];
     const defenderCard = defenderParticipant.team[defenderParticipant.activeIndex];
-    const staminaCost = getSkillStaminaCost(skill);
+    const staminaCost = options?.staminaCostOverride ?? getSkillStaminaCost(skill);
 
-    if (!canUseSkill(attackerCard, skill)) {
+    if (attackerCard.currentHp <= 0 || attackerCard.currentStamina < staminaCost) {
       setTurn((current) => ({
         ...current,
         message: `${getPokemonLabel(attackerCard.pokemon)} 體力不足，無法使用 ${skill.name_zh || skill.name}（需要 ${staminaCost} 體力）。`,
@@ -3419,38 +4108,170 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
     });
   }
 
+  function resolveBasicAttack() {
+    if (!participants || turn.attacker !== "player" || turn.locked || winner) return;
+    const active = participants.player.team[participants.player.activeIndex];
+    resolveSkill(createBasicAttackSkill(active), "manual", undefined, { staminaCostOverride: BASIC_ATTACK_STAMINA_COST });
+  }
+
+  function switchComputerPokemon(index: number) {
+    if (!participants || turn.attacker !== "computer" || turn.locked || winner) return;
+    const selected = participants.computer.team[index];
+    if (!selected || selected.currentHp <= 0 || index === participants.computer.activeIndex) {
+      restBattleTurn("computer");
+      return;
+    }
+
+    const nextParticipants = cloneParticipants(participants);
+    const nextComputer = nextParticipants.computer;
+    const previousActive = nextComputer.team[participants.computer.activeIndex];
+    const selectedNext = nextComputer.team[index];
+    const abilityMessages: string[] = [];
+
+    if (previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator") {
+      const healAmount = healBattleCard(previousActive, 0.1);
+      if (healAmount > 0) abilityMessages.push(`特性「${getAbilityLabel(previousActive.pokemon)}」發動，回復 ${healAmount} HP。`);
+    }
+
+    clearPositiveBattleBuffs(previousActive);
+    nextParticipants.computer = { ...nextComputer, activeIndex: index };
+    setPendingAllySkill(null);
+    setPendingSwitchTarget(null);
+    setTurn((current) => ({ ...current, locked: true }));
+
+    startSwitchEntryTimeline({
+      nextParticipants,
+      side: "computer",
+      previousCard: previousActive,
+      selectedIndex: index,
+      nextTurnSide: "player",
+      message: `電腦更換為 ${getPokemonLabel(selectedNext.pokemon)}。`,
+      abilityMessages,
+    });
+  }
+
+  function buildComputerBattleState(): BattleEnvState | null {
+    if (!participants) return null;
+    return {
+      participants: cloneParticipants(participants),
+      turn: "computer",
+      turnNumber: currentRound,
+    };
+  }
+
+  function executeComputerModelAction(action: BattleAction) {
+    if (action.type === "switch") {
+      switchComputerPokemon(action.targetIndex);
+      return;
+    }
+
+    if (action.type === "rest") {
+      restBattleTurn("computer");
+      return;
+    }
+
+    if (action.type === "basic_attack") {
+      const active = participants?.computer.team[participants.computer.activeIndex];
+      if (!active) {
+        restBattleTurn("computer");
+        return;
+      }
+      resolveSkill(createBasicAttackSkill(active), "computer", undefined, { staminaCostOverride: BASIC_ATTACK_STAMINA_COST });
+      return;
+    }
+
+    if (action.type === "shield") {
+      activateComputerShield();
+      return;
+    }
+
+    const skill = getSkillById(action.skillId);
+    if (!skill) {
+      restBattleTurn("computer");
+      return;
+    }
+    resolveSkill(skill, "computer", action.targetIndex);
+  }
+
+  function activateComputerShield() {
+    if (!participants || turn.attacker !== "computer" || turn.locked || winner) return;
+    const nextParticipants = cloneParticipants(participants);
+    const computerActive = nextParticipants.computer.team[nextParticipants.computer.activeIndex];
+    if ((computerActive.shieldTurns ?? 0) > 0) {
+      restBattleTurn("computer");
+      return;
+    }
+    computerActive.shieldTurns = 1;
+    const shieldSkill: Skill = {
+      id: "computer_shield_action",
+      name: "Shield",
+      name_zh: battleUiText.shield,
+      type: computerActive.pokemon.types[0],
+      category: "shield",
+      power: 0,
+      accuracy: 100,
+      effect: "shield_self",
+      target: "self",
+      description_zh: battleUiText.shieldReduction,
+    };
+    const message = `電腦的 ${getPokemonLabel(computerActive.pokemon)} 啟動護盾。`;
+
+    setPendingAllySkill(null);
+    setPendingSwitchTarget(null);
+    setTurn((current) => ({ ...current, locked: true, message }));
+    startBattleActionTimeline({
+      actionType: "shield",
+      attackerSide: "computer",
+      defenderSide: "player",
+      attackerName: getPokemonLabel(computerActive.pokemon),
+      defenderName: getPokemonLabel(nextParticipants.player.team[nextParticipants.player.activeIndex].pokemon),
+      skill: shieldSkill,
+      damage: 0,
+      typeMultiplier: 1,
+      effectivenessText: battleUiText.shieldReduction,
+      isHit: true,
+      message,
+      finalMessage: message,
+      abilityMessages: [],
+      nextParticipants,
+      skipHandoff: true,
+      actionTitle: `${getPokemonLabel(computerActive.pokemon)} 啟動護盾！`,
+      actionSubtitle: "Defense Ready",
+      effectLabel: battleUiText.shieldReduction,
+    });
+  }
+
   function restBattleTurn(side: BattleSide) {
     if (!participants || turn.locked || winner) return;
     const defenderSide: BattleSide = side === "player" ? "computer" : "player";
     const nextParticipants = cloneParticipants(participants);
     const restingParticipant = nextParticipants[side];
     const restingCard = restingParticipant.team[restingParticipant.activeIndex];
-    const nextTurnParticipant = nextParticipants[defenderSide];
-    const nextTurnCard = nextTurnParticipant.team[nextTurnParticipant.activeIndex];
     const restRecovered = recoverStamina(restingCard, REST_STAMINA_RECOVERY);
-    const turnRecovered = recoverStamina(nextTurnCard, TURN_STAMINA_RECOVERY);
-    let nextTurnSeconds = TURN_SECONDS;
-
-    if ((nextTurnCard.speedBoostTurns ?? 0) > 0) {
-      nextTurnSeconds = TURN_SECONDS + 5;
-      nextTurnCard.speedBoostTurns = 0;
-    }
-    if ((nextTurnCard.speedDownTurns ?? 0) > 0) {
-      nextTurnSeconds = Math.max(8, TURN_SECONDS - 5);
-      nextTurnCard.speedDownTurns = 0;
-    }
+    const message = `${getPokemonLabel(restingCard.pokemon)} 選擇休息，回復 ${restRecovered} 體力。`;
 
     setPendingAllySkill(null);
     setPendingSwitchTarget(null);
-    setParticipants(nextParticipants);
-    setTurn({
-      attacker: defenderSide,
-      secondsLeft: nextTurnSeconds,
-      locked: false,
-      message: [
-        `${getPokemonLabel(restingCard.pokemon)} 選擇休息，回復 ${restRecovered} 體力。`,
-        turnRecovered > 0 ? `${getPokemonLabel(nextTurnCard.pokemon)} 回復 ${turnRecovered} 體力。` : "",
-      ].filter(Boolean).join(" "),
+    setTurn((current) => ({ ...current, locked: true }));
+
+    startBattleActionTimeline({
+      actionType: "rest",
+      attackerSide: side,
+      defenderSide,
+      attackerName: getPokemonLabel(restingCard.pokemon),
+      defenderName: getPokemonLabel(nextParticipants[defenderSide].team[nextParticipants[defenderSide].activeIndex].pokemon),
+      skill: createRestSkill(restingCard),
+      damage: 0,
+      typeMultiplier: 1,
+      effectivenessText: `回復 ${restRecovered} 體力`,
+      isHit: true,
+      message,
+      finalMessage: message,
+      abilityMessages: [],
+      nextParticipants,
+      actionTitle: `${getPokemonLabel(restingCard.pokemon)} 休息！`,
+      actionSubtitle: "Rest",
+      effectLabel: `回復 ${restRecovered} 體力`,
     });
   }
 
@@ -3891,7 +4712,6 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
                     canSwitch={playerCanAct && !pendingAllySkill && !pendingSwitchTarget}
                     canTargetAlly={false}
                     activeShielded={playerShielded}
-                    hideActive
                   />
                   <CenterActionPanel
                     activeCard={playerActive}
@@ -3901,6 +4721,7 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
                     pendingAllySkill={pendingAllySkill}
                     pendingSwitchTarget={pendingSwitchTarget}
                     onSkill={(skill) => resolveSkill(skill, "manual")}
+                    onBasicAttack={resolveBasicAttack}
                     onShield={activatePlayerShield}
                     onRest={() => restBattleTurn("player")}
                     onSwitchPrompt={openSwitchTargetOverlay}
@@ -3914,7 +4735,6 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
                     activeIndex={participants.computer.activeIndex}
                     side="computer"
                     battleAnimation={battleAnimation}
-                    hideActive
                   />
                 </div>
               </section>
@@ -4058,7 +4878,55 @@ function NormalBattlePage({ onBack }: { onBack: () => void }) {
               </div>
             </div>
 
-            <div className="flex h-[104px] shrink-0 items-end justify-end border-t border-slate-800/80 pb-2">
+            <div className="flex min-h-[148px] shrink-0 items-end justify-between gap-5 border-t border-slate-800/80 pb-2 pt-5">
+              <AnimatePresence initial={false}>
+                {hasComputerOpponent && (
+                  <motion.div
+                    key="computer-difficulty"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    transition={{ duration: 0.2 }}
+                    className="min-w-0 flex-1"
+                  >
+                    <div className="mb-3 flex items-end justify-between gap-4">
+                      <div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-rose-200">CPU Model</p>
+                        <h3 className="mt-1 text-lg font-black text-white">{appliedTrainingModel ? "已套用訓練模型" : "未套用模型"}</h3>
+                        <p className="mt-1 truncate text-xs font-black text-cyan-200">{appliedTrainingModel ? appliedTrainingModel.name : "電腦將維持隨機打法"}</p>
+                        {appliedTrainingModel && (
+                          <p className={["mt-1 text-xs font-black", appliedModelLoadStatus === "ready" ? "text-emerald-200" : appliedModelLoadStatus === "error" ? "text-amber-200" : "text-slate-400"].join(" ")}>
+                            {appliedModelLoadStatus === "ready" ? "模型權重已載入" : appliedModelLoadStatus === "error" ? "權重載入失敗，暫用難度規則" : "正在載入模型權重"}
+                          </p>
+                        )}
+                      </div>
+                      <p className="hidden max-w-md text-right text-xs font-bold leading-5 text-slate-500 lg:block">
+                        {appliedTrainingModel ? computerDifficultyOptions[appliedTrainingModel.computerDifficulty].description : "未套用訓練模型時，電腦會維持隨機選角與隨機出招。"}
+                      </p>
+                    </div>
+                    <div className="grid max-w-3xl grid-cols-5 gap-2">
+                      {(Object.keys(computerDifficultyOptions) as ComputerDifficulty[]).map((difficulty) => {
+                        const option = computerDifficultyOptions[difficulty];
+                        const selected = appliedTrainingModel?.computerDifficulty === difficulty;
+
+                        return (
+                          <button
+                            key={difficulty}
+                            type="button"
+                            disabled
+                            className={[
+                              "min-h-11 rounded-2xl border px-4 text-sm font-black transition",
+                              selected ? option.selectedClassName : option.className,
+                            ].join(" ")}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
               <button
                 type="button"
                 disabled={hasComputerOpponent}
@@ -4135,6 +5003,7 @@ function PokedexPage({ onBack }: { onBack: () => void }) {
   const selectedSkills = selectedBattlePokemon ? getPokemonSkills(selectedBattlePokemon) : [];
   const selectedProfile = getPokedexProfile(selectedBattlePokemon);
   const selectedAdvantages = selectedBattlePokemon ? getAdvantageTypes(selectedBattlePokemon.types) : [];
+  const selectedSuperEffectiveCombos = selectedBattlePokemon ? getSuperEffectiveCombos(selectedBattlePokemon.types) : [];
   const selectedWeaknesses = selectedBattlePokemon ? getWeaknessTypes(selectedBattlePokemon.types) : [];
   const selectedStats = selectedBattlePokemon
     ? [
@@ -4443,7 +5312,7 @@ function PokedexPage({ onBack }: { onBack: () => void }) {
                     )}
 
                     {selectedDetailTab === "types" && (
-                      <div className="grid gap-5">
+                      <div className="grid h-full content-start gap-5 overflow-y-auto pr-1">
                         <div>
                           <p className="text-xs font-black tracking-[0.2em] text-slate-500">屬性</p>
                           <div className="mt-3 flex flex-wrap gap-2">
@@ -4458,6 +5327,18 @@ function PokedexPage({ onBack }: { onBack: () => void }) {
                             {selectedAdvantages.length > 0 ? selectedAdvantages.map((type) => (
                               <span key={type} className={["w-20 rounded-full border px-0 py-2 text-center text-sm font-black", getTypeChipClass(type)].join(" ")}>{getTypeLabel(type)}</span>
                             )) : <span className="text-sm font-bold text-slate-400">無明顯剋制</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs font-black tracking-[0.2em] text-slate-500">超級克制</p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {selectedSuperEffectiveCombos.length > 0 ? selectedSuperEffectiveCombos.map((combo) => (
+                              <span key={`${combo.attackType}-${combo.defenderTypes.join("-")}`} className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-orange-200/55 bg-orange-300/12 px-2.5 py-1 text-xs font-black text-orange-100">
+                                <span className={["rounded-full border px-2 py-0.5", getTypeChipClass(combo.attackType)].join(" ")}>{getTypeLabel(combo.attackType)}</span>
+                                <span>x4</span>
+                                <span>{combo.defenderTypes.map(getTypeLabel).join("／")}</span>
+                              </span>
+                            )) : <span className="text-sm font-bold text-slate-400">無超級克制組合</span>}
                           </div>
                         </div>
                         <div>
@@ -4526,4 +5407,3 @@ function PokedexPage({ onBack }: { onBack: () => void }) {
     </div>
   );
 }
-

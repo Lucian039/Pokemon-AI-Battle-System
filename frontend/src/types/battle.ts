@@ -169,3 +169,165 @@ export interface BattleTurnState {
   locked: boolean;
   message: string;
 }
+
+export type BattleAction =
+  | {
+      type: "skill";
+      skillId: string;
+      targetSide?: BattleSide;
+      targetIndex?: number;
+    }
+  | {
+      type: "basic_attack";
+    }
+  | {
+      type: "shield";
+    }
+  | {
+      type: "rest";
+    }
+  | {
+      type: "switch";
+      targetIndex: number;
+    };
+
+export interface BattleEnvState {
+  participants: Record<BattleSide, BattleParticipant>;
+  turn: BattleSide;
+  turnNumber: number;
+  winner?: BattleSide;
+  isDraw?: boolean;
+}
+
+export interface BattleReplaySnapshot {
+  participants: Record<BattleSide, BattleParticipant>;
+  turn: BattleSide;
+  turnNumber: number;
+}
+
+export interface BattleReplayEvent {
+  id: string;
+  turnNumber: number;
+  actor: BattleSide;
+  action: BattleAction;
+  actionLabel: string;
+  message: string;
+  damage: number;
+  healing: number;
+  skillName?: string;
+  winner?: BattleSide;
+  isDraw?: boolean;
+  snapshot: BattleReplaySnapshot;
+}
+
+export interface BattleAgent {
+  name: string;
+  selectAction: (state: BattleEnvState, legalActions: BattleAction[]) => BattleAction;
+}
+
+export interface TrainingMockStats {
+  episodes: number;
+  winRate: number;
+  averageTurns: number;
+  loss: number;
+  epsilon: number;
+  status: "idle" | "watching" | "mock-training";
+}
+
+export interface TrainingEpisodeResult {
+  winner?: BattleSide;
+  isDraw?: boolean;
+  aborted?: boolean;
+  turns: number;
+  totalReward: number;
+  loss: number;
+  events: BattleReplayEvent[];
+  switchCount?: number;
+  shieldCount?: number;
+  basicAttackCount?: number;
+  restCount?: number;
+  matchWinCount?: number;
+  matchLossCount?: number;
+  matchDrawCount?: number;
+  comebackWinCount?: number;
+  leadPickWinCount?: number;
+  beneficialSwitchCount?: number;
+  effectiveShieldCount?: number;
+}
+
+export interface TrainingMetricPoint {
+  episode: number;
+  loss: number;
+  epsilon: number;
+  recentWinRate100?: number;
+  recentWinRate500?: number;
+}
+
+export interface TrainingState {
+  episodes: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  winRate: number;
+  averageTurns: number;
+  averageReward: number;
+  loss: number;
+  epsilon: number;
+  switchCount: number;
+  shieldCount: number;
+  basicAttackCount: number;
+  restCount: number;
+  matchWinCount: number;
+  matchLossCount: number;
+  matchDrawCount: number;
+  comebackWinCount: number;
+  leadPickWinCount: number;
+  beneficialSwitchCount: number;
+  effectiveShieldCount: number;
+  recentResults: Array<"win" | "loss" | "draw">;
+  metricHistory: TrainingMetricPoint[];
+  status: "idle" | "training" | "paused";
+  currentReplay: BattleReplayEvent[];
+}
+
+export interface TrainingModelMetadata {
+  version: "battle-tactics-v1" | "battle-tactics-v2" | "battle-tactics-v3-rules";
+  savedAt: string;
+  trainingState: TrainingState;
+  epsilon: number;
+  replayBuffer?: TrainingReplaySample[];
+}
+
+export interface TrainingReplaySample {
+  stateVector: number[];
+  actionIndex: number;
+  reward: number;
+  nextStateVector: number[];
+  done: boolean;
+  priority?: number;
+}
+
+export interface TrainingWorkerState {
+  training: boolean;
+  saving: boolean;
+  loading: boolean;
+  hasSavedModel: boolean;
+  saveStatus: "unsaved" | "saved" | "loaded" | "failed";
+}
+
+export type TrainingWorkerRequest =
+  | { type: "start" }
+  | { type: "pause" }
+  | { type: "reset" }
+  | { type: "save" }
+  | { type: "load" }
+  | { type: "status" };
+
+export type TrainingWorkerResponse =
+  | { type: "ready"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "progress"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "paused"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "saved"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "loaded"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "reset"; state: TrainingState; workerState: TrainingWorkerState }
+  | { type: "error"; message: string; state?: TrainingState; workerState?: TrainingWorkerState };

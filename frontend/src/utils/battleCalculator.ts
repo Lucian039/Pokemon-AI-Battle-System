@@ -71,9 +71,10 @@ export function getTypeMultiplier(moveType: PokemonType, defenderTypes: PokemonT
 }
 
 export function getEffectivenessText(multiplier: number): string {
+  if (multiplier >= 4) return "超級克制";
   if (multiplier >= 2) return "效果絕佳";
   if (multiplier === 0) return "沒有效果";
-  if (multiplier < 1) return "效果不佳";
+  if (multiplier < 1) return "效果不好";
   return "效果普通";
 }
 
@@ -93,7 +94,7 @@ export function calculateDamage(attacker: PokemonStats, defender: PokemonStats, 
     return {
       damage: 0,
       typeMultiplier: 1,
-      effectivenessText: "狀態技能",
+      effectivenessText: "技能成功",
       isHit: true,
     };
   }
