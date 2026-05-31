@@ -2,6 +2,7 @@ import { AI_BATTLE_MAX_TURNS, BASIC_ATTACK_STAMINA_COST, cloneBattleState, creat
 import { calculateDamage, canUseSkill, getPokemonSkills, REST_STAMINA_RECOVERY } from "../utils/battleCalculator";
 import type { BattleAction, BattleAgent, BattleEnvState, BattleReplayEvent, BattleSide, TrainingEpisodeResult, TrainingState } from "../types/battle";
 import { LearningAgent, scoreActionForReward } from "./learningAgent";
+import { createMatchStrategyContext, decideMatchStrategy } from "./matchStrategyPolicy";
 
 export const MAX_TRAINING_METRIC_POINTS = 720;
 export const MAX_RECENT_RESULT_POINTS = 1000;
@@ -218,12 +219,31 @@ export function calculateRecentWinRate(results: Array<"win" | "loss" | "draw">, 
   return (window.filter((result) => result === "win").length / window.length) * 100;
 }
 
-export async function runTrainingEpisode(params: { learningAgent: LearningAgent; opponentAgent: BattleAgent; learningSide?: BattleSide; seed?: number; maxTurns?: number; shouldStop?: () => boolean }): Promise<TrainingEpisodeResult> {
+export async function runTrainingEpisode(params: {
+  learningAgent: LearningAgent;
+  opponentAgent: BattleAgent;
+  learningSide?: BattleSide;
+  seed?: number;
+  maxTurns?: number;
+  playerWins?: number;
+  computerWins?: number;
+  round?: 1 | 2 | 3;
+  shouldStop?: () => boolean;
+}): Promise<TrainingEpisodeResult> {
   const learningSide = params.learningSide ?? "player";
   const maxTurns = params.maxTurns ?? AI_BATTLE_MAX_TURNS;
   const episodeSeed = params.seed ?? Date.now();
   let state = createAiBattleState(episodeSeed);
   applyCurriculumState(state, episodeSeed, learningSide);
+  const strategyContext = createMatchStrategyContext(state, {
+    playerWins: params.playerWins ?? 0,
+    computerWins: params.computerWins ?? 0,
+    round: params.round ?? (((Math.abs(episodeSeed) % 3) + 1) as 1 | 2 | 3),
+    side: learningSide,
+  });
+  const strategyDecision = decideMatchStrategy(state, strategyContext);
+  const leadPickCandidate = (strategyContext.ownTeamHpRatio ?? 0) >= (strategyContext.opponentTeamHpRatio ?? 0) * 1.05;
+  const comebackCandidate = Boolean(strategyContext.behind || (strategyContext.ownTeamHpRatio ?? 0) < (strategyContext.opponentTeamHpRatio ?? 0) * 0.85);
   const events: BattleReplayEvent[] = [];
   let totalReward = 0;
   let totalLoss = 0;
@@ -237,7 +257,9 @@ export async function runTrainingEpisode(params: { learningAgent: LearningAgent;
     const beforeState = cloneBattleState(state);
     const legalActions = getLegalActions(state);
     const actingAgent = state.turn === learningSide ? params.learningAgent : params.opponentAgent;
-    const proposedAction = actingAgent.selectAction(cloneBattleState(state), legalActions);
+    const proposedAction = state.turn === learningSide
+      ? params.learningAgent.selectAction(cloneBattleState(state), legalActions, strategyDecision)
+      : actingAgent.selectAction(cloneBattleState(state), legalActions);
     const action = isLegalAction(proposedAction, legalActions) ? proposedAction : legalActions[0] ?? { type: "rest" as const };
     const result = stepBattle(state, action, maxTurns);
     state = result.state;
@@ -281,7 +303,22 @@ export async function runTrainingEpisode(params: { learningAgent: LearningAgent;
 
   if (params.shouldStop?.()) return { turns: events.length, totalReward, loss: trainCount > 0 ? totalLoss / trainCount : 0, events, aborted: true, ...episodeTags };
   params.learningAgent.decayExploration();
-  return { winner: state.winner, isDraw: state.isDraw, aborted: false, turns: events.length, totalReward, loss: trainCount > 0 ? totalLoss / trainCount : 0, events, ...episodeTags };
+  const won = state.winner === learningSide;
+  return {
+    winner: state.winner,
+    isDraw: state.isDraw,
+    aborted: false,
+    turns: events.length,
+    totalReward,
+    loss: trainCount > 0 ? totalLoss / trainCount : 0,
+    events,
+    matchWinCount: won ? 1 : 0,
+    matchLossCount: state.winner && !won ? 1 : 0,
+    matchDrawCount: state.isDraw ? 1 : 0,
+    comebackWinCount: won && comebackCandidate ? 1 : 0,
+    leadPickWinCount: won && leadPickCandidate ? 1 : 0,
+    ...episodeTags,
+  };
 }
 
 export function createInitialTrainingState(): TrainingState {
@@ -374,11 +411,11 @@ export function reduceTrainingState(previous: TrainingState, result: TrainingEpi
     shieldCount: (previous.shieldCount ?? 0) + (result.shieldCount ?? 0),
     basicAttackCount: (previous.basicAttackCount ?? 0) + (result.basicAttackCount ?? 0),
     restCount: (previous.restCount ?? 0) + (result.restCount ?? 0),
-    matchWinCount: previous.matchWinCount ?? 0,
-    matchLossCount: previous.matchLossCount ?? 0,
-    matchDrawCount: previous.matchDrawCount ?? 0,
-    comebackWinCount: previous.comebackWinCount ?? 0,
-    leadPickWinCount: previous.leadPickWinCount ?? 0,
+    matchWinCount: (previous.matchWinCount ?? 0) + (result.matchWinCount ?? 0),
+    matchLossCount: (previous.matchLossCount ?? 0) + (result.matchLossCount ?? 0),
+    matchDrawCount: (previous.matchDrawCount ?? 0) + (result.matchDrawCount ?? 0),
+    comebackWinCount: (previous.comebackWinCount ?? 0) + (result.comebackWinCount ?? 0),
+    leadPickWinCount: (previous.leadPickWinCount ?? 0) + (result.leadPickWinCount ?? 0),
     beneficialSwitchCount: (previous.beneficialSwitchCount ?? 0) + (result.beneficialSwitchCount ?? 0),
     effectiveShieldCount: (previous.effectiveShieldCount ?? 0) + (result.effectiveShieldCount ?? 0),
     recentResults,

@@ -2,6 +2,7 @@ import {
   calculateDamage,
   canUseSkill,
   DEFAULT_STAMINA,
+  GENERIC_SHIELD_DAMAGE_REDUCTION,
   getBattleEnabledPokemon,
   getBurnDamage,
   getPokemonSkills,
@@ -10,6 +11,9 @@ import {
   healBattleCard,
   recoverStamina,
   REST_STAMINA_RECOVERY,
+  SHIELD_STAMINA_COST,
+  SKILL_SHIELD_DAMAGE_REDUCTION,
+  SWITCH_STAMINA_COST,
   TURN_STAMINA_RECOVERY,
 } from "./battleCalculator";
 import type {
@@ -37,7 +41,7 @@ function getSkillLabel(skill: Skill) {
   return skill.name_zh || skill.name;
 }
 
-function createBattleCard(pokemon: PokemonStats): BattleCardState {
+export function createBattleCard(pokemon: PokemonStats): BattleCardState {
   return {
     pokemon,
     currentHp: pokemon.max_hp,
@@ -118,6 +122,8 @@ function clearPositiveBattleBuffs(card: BattleCardState) {
   card.attackBoostTurns = 0;
   card.defenseBoostTurns = 0;
   card.speedBoostTurns = 0;
+  card.shieldTurns = 0;
+  card.shieldDamageReduction = undefined;
 }
 
 function consumeActionBlocker(card: BattleCardState) {
@@ -175,6 +181,29 @@ export function createAiBattleState(seed = Date.now()): BattleEnvState {
   };
 }
 
+export function createAiBattleStateFromTeams(params: {
+  playerTeam: PokemonStats[];
+  computerTeam: PokemonStats[];
+  playerLeadIndex?: number;
+  computerLeadIndex?: number;
+}): BattleEnvState {
+  const clampLeadIndex = (team: PokemonStats[], index = 0) => Math.max(0, Math.min(Math.max(0, team.length - 1), index));
+  return {
+    participants: {
+      player: {
+        team: params.playerTeam.slice(0, AI_BATTLE_TEAM_SIZE).map(createBattleCard),
+        activeIndex: clampLeadIndex(params.playerTeam, params.playerLeadIndex),
+      },
+      computer: {
+        team: params.computerTeam.slice(0, AI_BATTLE_TEAM_SIZE).map(createBattleCard),
+        activeIndex: clampLeadIndex(params.computerTeam, params.computerLeadIndex),
+      },
+    },
+    turn: "player",
+    turnNumber: 1,
+  };
+}
+
 export function getLegalActions(state: BattleEnvState, side = state.turn): BattleAction[] {
   if (state.winner || state.isDraw) return [];
 
@@ -194,14 +223,18 @@ export function getLegalActions(state: BattleEnvState, side = state.turn): Battl
 
   const tacticalActions: BattleAction[] = [];
   if (active.currentStamina >= BASIC_ATTACK_STAMINA_COST) tacticalActions.push({ type: "basic_attack" });
-  if ((active.shieldTurns ?? 0) <= 0) tacticalActions.push({ type: "shield" });
-  const switchActions = participant.team.flatMap<BattleAction>((card, index) => (index !== participant.activeIndex && card.currentHp > 0 ? [{ type: "switch", targetIndex: index }] : []));
-  return [...skillActions, ...tacticalActions, { type: "rest" }, ...switchActions];
+  if ((active.shieldTurns ?? 0) <= 0 && active.currentStamina >= SHIELD_STAMINA_COST) tacticalActions.push({ type: "shield" });
+  const switchActions = active.currentStamina >= SWITCH_STAMINA_COST
+    ? participant.team.flatMap<BattleAction>((card, index) => (index !== participant.activeIndex && card.currentHp > 0 ? [{ type: "switch", targetIndex: index }] : []))
+    : [];
+  const restActions: BattleAction[] = active.currentStamina < active.maxStamina ? [{ type: "rest" }] : [];
+  return [...skillActions, ...tacticalActions, ...restActions, ...switchActions];
 }
 
 function applySimpleEffect(skill: Skill, attacker: BattleCardState, defender: BattleCardState, messageParts: string[]) {
   if (skill.effect === "shield_self") {
     attacker.shieldTurns = Math.max(attacker.shieldTurns ?? 0, 1);
+    attacker.shieldDamageReduction = SKILL_SHIELD_DAMAGE_REDUCTION;
     messageParts.push(`${getPokemonLabel(attacker.pokemon)} 展開護盾`);
   }
   if (skill.effect === "raise_attack") {
@@ -275,8 +308,10 @@ function applyAttackDamage(attacker: BattleCardState, defender: BattleCardState,
     }
 
     if ((defender.shieldTurns ?? 0) > 0) {
-      damage = Math.max(1, Math.floor(damage * 0.5));
+      const shieldReduction = defender.shieldDamageReduction ?? SKILL_SHIELD_DAMAGE_REDUCTION;
+      damage = Math.max(1, Math.floor(damage * (1 - shieldReduction)));
       defender.shieldTurns = 0;
+      defender.shieldDamageReduction = undefined;
       messageParts.push("護盾吸收了部分傷害");
     }
 
@@ -346,10 +381,7 @@ function resolveWinner(state: BattleEnvState, maxTurns: number) {
   if (computerDefeated) return { winner: "player" as BattleSide };
 
   if (state.turnNumber > maxTurns) {
-    const playerHp = getTeamHp(state.participants.player);
-    const computerHp = getTeamHp(state.participants.computer);
-    if (playerHp === computerHp) return { isDraw: true };
-    return { winner: playerHp > computerHp ? ("player" as BattleSide) : ("computer" as BattleSide) };
+    return { isDraw: true };
   }
 
   return {};
@@ -370,7 +402,7 @@ export function stepBattle(state: BattleEnvState, action: BattleAction, maxTurns
   let skillName: string | undefined;
   let skipHandoff = false;
 
-  if (action.type !== "switch" && action.type !== "rest") {
+  if (action.type !== "switch") {
     const blockedMessage = consumeActionBlocker(actorCard);
     if (blockedMessage) {
       actionLabel = "行動失敗";
@@ -380,9 +412,13 @@ export function stepBattle(state: BattleEnvState, action: BattleAction, maxTurns
 
   if (!message && action.type === "switch") {
     const targetCard = actorParticipant.team[action.targetIndex];
-    if (targetCard?.currentHp > 0 && action.targetIndex !== actorParticipant.activeIndex) {
+    if (targetCard?.currentHp > 0 && action.targetIndex !== actorParticipant.activeIndex && actorCard.currentStamina >= SWITCH_STAMINA_COST) {
       const previousActive = actorCard;
-      if (previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator") healBattleCard(previousActive, 0.1);
+      actorCard.currentStamina = Math.max(0, actorCard.currentStamina - SWITCH_STAMINA_COST);
+      if (previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator" && !previousActive.regeneratorUsed) {
+        healBattleCard(previousActive, 0.1);
+        previousActive.regeneratorUsed = true;
+      }
       clearPositiveBattleBuffs(previousActive);
       actorParticipant.activeIndex = action.targetIndex;
       actorCard = targetCard;
@@ -394,16 +430,23 @@ export function stepBattle(state: BattleEnvState, action: BattleAction, maxTurns
       message = `${getPokemonLabel(actorCard.pokemon)} 無法換牌，改為休息並回復 ${recovered} 體力。`;
     }
   } else if (!message && action.type === "rest") {
-    const recovered = recoverStamina(actorCard, REST_STAMINA_RECOVERY);
+    const recovered = actorCard.currentStamina >= actorCard.maxStamina ? 0 : recoverStamina(actorCard, REST_STAMINA_RECOVERY);
     actionLabel = "休息";
     message = `${getPokemonLabel(actorCard.pokemon)} 選擇休息，回復 ${recovered} 體力。`;
   } else if (!message && action.type === "shield") {
-    actorCard.shieldTurns = Math.max(actorCard.shieldTurns ?? 0, 1);
-    const shieldSkill = createShieldActionSkill(actorCard);
-    actionLabel = "護盾";
-    skillName = shieldSkill.name_zh;
-    skipHandoff = true;
-    message = `${getPokemonLabel(actorCard.pokemon)} 啟動護盾，下一次受到傷害降低。`;
+    if (actorCard.currentStamina < SHIELD_STAMINA_COST) {
+      const recovered = recoverStamina(actorCard, REST_STAMINA_RECOVERY);
+      actionLabel = "體力不足";
+      message = `${getPokemonLabel(actorCard.pokemon)} 體力不足，改為休息並回復 ${recovered} 體力。`;
+    } else {
+      actorCard.currentStamina = Math.max(0, actorCard.currentStamina - SHIELD_STAMINA_COST);
+      actorCard.shieldTurns = Math.max(actorCard.shieldTurns ?? 0, 1);
+      actorCard.shieldDamageReduction = GENERIC_SHIELD_DAMAGE_REDUCTION;
+      const shieldSkill = createShieldActionSkill(actorCard);
+      actionLabel = "護盾";
+      skillName = shieldSkill.name_zh;
+      message = `${getPokemonLabel(actorCard.pokemon)} 啟動護盾，消耗 ${SHIELD_STAMINA_COST} 體力，下一次受到傷害降低。`;
+    }
   } else if (!message) {
     const skillAction = action.type === "skill" ? action : undefined;
     const skill = action.type === "basic_attack" ? createBasicAttackSkill(actorCard) : skillAction ? getSkillById(skillAction.skillId) : undefined;

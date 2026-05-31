@@ -154,8 +154,10 @@ export interface BattleCardState {
   defenseDownTurns?: number;
   speedDownTurns?: number;
   shieldTurns?: number;
+  shieldDamageReduction?: number;
   asleepTurns?: number;
   paralyzedTurns?: number;
+  regeneratorUsed?: boolean;
 }
 
 export interface BattleParticipant {

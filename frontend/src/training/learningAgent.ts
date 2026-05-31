@@ -2,6 +2,7 @@ import * as tf from "@tensorflow/tfjs";
 import { canUseSkill, getPokemonSkills, getSkillById, getSkillStaminaCost, getTypeMultiplier, REST_STAMINA_RECOVERY } from "../utils/battleCalculator";
 import { BASIC_ATTACK_STAMINA_COST, createBasicAttackSkill } from "../utils/battleEngine";
 import type { BattleAction, BattleAgent, BattleCardState, BattleEnvState, BattleSide, Skill, TrainingModelMetadata, TrainingReplaySample } from "../types/battle";
+import type { MatchStrategyDecision } from "./matchStrategyPolicy";
 
 export const STATE_VECTOR_SIZE = 96;
 export const ACTION_VECTOR_SIZE = 10;
@@ -16,6 +17,7 @@ const TARGET_SYNC_INTERVAL = 200;
 const PRIORITY_ALPHA = 0.6;
 const PRIORITY_EPSILON = 0.01;
 const TACTICAL_POLICY_WEIGHT = 0.72;
+const MATCH_STRATEGY_BIAS_WEIGHT = 18;
 
 function getOpponentSide(side: BattleSide): BattleSide {
   return side === "player" ? "computer" : "player";
@@ -187,6 +189,11 @@ function tacticalActionScore(state: BattleEnvState, side: BattleSide, action: Ba
   return 0;
 }
 
+function matchStrategyBiasScore(action: BattleAction, strategyDecision?: MatchStrategyDecision) {
+  if (!strategyDecision) return 0;
+  return (strategyDecision.actionBias[action.type] ?? 0) * MATCH_STRATEGY_BIAS_WEIGHT;
+}
+
 export function stateToVector(state: BattleEnvState, learningSide: BattleSide): number[] {
   const opponentSide = getOpponentSide(learningSide);
   const learning = state.participants[learningSide];
@@ -285,7 +292,7 @@ export class LearningAgent implements BattleAgent {
     this.epsilon = Math.max(this.minEpsilon, this.epsilon * this.epsilonDecay);
   }
 
-  selectAction(state: BattleEnvState, legalActions: BattleAction[]) {
+  selectAction(state: BattleEnvState, legalActions: BattleAction[], strategyDecision?: MatchStrategyDecision) {
     if (legalActions.length === 0) return { type: "rest" as const };
     if (Math.random() < this.epsilon) return legalActions[Math.floor(Math.random() * legalActions.length)];
 
@@ -295,8 +302,8 @@ export class LearningAgent implements BattleAgent {
     input.dispose();
     prediction.dispose();
     return [...legalActions].sort((a, b) => {
-      const scoreA = qValues[getActionIndex(state, state.turn, a)] + tacticalActionScore(state, state.turn, a) * TACTICAL_POLICY_WEIGHT;
-      const scoreB = qValues[getActionIndex(state, state.turn, b)] + tacticalActionScore(state, state.turn, b) * TACTICAL_POLICY_WEIGHT;
+      const scoreA = qValues[getActionIndex(state, state.turn, a)] + tacticalActionScore(state, state.turn, a) * TACTICAL_POLICY_WEIGHT + matchStrategyBiasScore(a, strategyDecision);
+      const scoreB = qValues[getActionIndex(state, state.turn, b)] + tacticalActionScore(state, state.turn, b) * TACTICAL_POLICY_WEIGHT + matchStrategyBiasScore(b, strategyDecision);
       return scoreB - scoreA;
     })[0];
   }

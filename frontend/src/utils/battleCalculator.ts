@@ -16,6 +16,10 @@ export const BURN_DAMAGE_RATIO = 0.06;
 export const DEFAULT_STAMINA = 100;
 export const TURN_STAMINA_RECOVERY = 20;
 export const REST_STAMINA_RECOVERY = 40;
+export const SHIELD_STAMINA_COST = 35;
+export const SWITCH_STAMINA_COST = 20;
+export const GENERIC_SHIELD_DAMAGE_REDUCTION = 0.4;
+export const SKILL_SHIELD_DAMAGE_REDUCTION = 0.5;
 
 export function getPokemonById(id: number | string): PokemonStats | undefined {
   return pokemonStats[String(id)];
@@ -48,7 +52,7 @@ export function getSkillStaminaCost(skill: Skill) {
   }
 
   if (skill.category === "heal") return 30;
-  if (skill.category === "shield") return 25;
+  if (skill.category === "shield") return SHIELD_STAMINA_COST;
   return 20;
 }
 

@@ -1,5 +1,6 @@
 ﻿import { AnimatePresence, motion } from "framer-motion";
 import AITrainingPage, { type TrainingModelApplyPayload } from "./AITrainingPage";
+import MatchStrategyTrainingPage from "./MatchStrategyTrainingPage";
 import BattleLoadingPage from "./BattleLoadingPage";
 import type { Transition } from "framer-motion";
 import {
@@ -39,6 +40,7 @@ import {
   calculateDamage,
   canUseSkill,
   DEFAULT_STAMINA,
+  GENERIC_SHIELD_DAMAGE_REDUCTION,
   getBattleEnabledPokemon,
   getBurnDamage,
   getPokemonById,
@@ -48,6 +50,9 @@ import {
   healBattleCard,
   recoverStamina,
   REST_STAMINA_RECOVERY,
+  SHIELD_STAMINA_COST,
+  SKILL_SHIELD_DAMAGE_REDUCTION,
+  SWITCH_STAMINA_COST,
   TURN_STAMINA_RECOVERY,
 } from "../utils/battleCalculator";
 import { getLegalActions } from "../utils/battleEngine";
@@ -198,7 +203,7 @@ const BATTLE_START_INTRO_START_MS = 1300;
 const BATTLE_START_INTRO_HANDOFF_MS = 1200;
 const BASIC_ATTACK_POWER = 30;
 const BASIC_ATTACK_STAMINA_COST = 10;
-const TRAINING_API_BASE = ((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_TRAINING_API_BASE ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const TRAINING_API_BASE = ((import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_TRAINING_API_BASE ?? "http://127.0.0.1:18053").replace(/\/$/, "");
 
 const computerDifficultyOptions: Record<ComputerDifficulty, { label: string; description: string; className: string; selectedClassName: string }> = {
   beginner: {
@@ -744,6 +749,7 @@ function chooseComputerSwitchIndex(participant: BattleParticipant, opponentActiv
 
   const active = participant.team[participant.activeIndex];
   if (!active || active.currentHp <= 0) return -1;
+  if (active.currentStamina < SWITCH_STAMINA_COST) return -1;
 
   const activeHpRatio = active.currentHp / active.pokemon.max_hp;
   const activeAttackScore = getBestUsableAttackScore(active, opponentActive);
@@ -823,6 +829,14 @@ function getSideLabel(side: BattleSide) {
   return side === "player" ? "玩家" : "電腦";
 }
 
+function getOppositeDraftPicker(side: DraftPickSide): DraftPickSide {
+  return side === "player" ? "computer" : "player";
+}
+
+function getRoundFirstPicker(matchFirstPicker: DraftPickSide, round: number): DraftPickSide {
+  return round % 2 === 1 ? matchFirstPicker : getOppositeDraftPicker(matchFirstPicker);
+}
+
 function getRoundLoadingLabel(round: number) {
   const labels = ["第一回合", "第二回合", "第三回合"];
   return labels[round - 1] ?? `第 ${round} 回合`;
@@ -864,6 +878,7 @@ function clearPositiveBattleBuffs(card: BattleCardState) {
   card.defenseBoostTurns = 0;
   card.speedBoostTurns = 0;
   card.shieldTurns = 0;
+  card.shieldDamageReduction = undefined;
 }
 
 function getAttackBoostBadge(stack: number) {
@@ -1474,10 +1489,12 @@ function TrainingChoiceSheet({
   open,
   onClose,
   onSelectTactics,
+  onSelectStrategy,
 }: {
   open: boolean;
   onClose: () => void;
   onSelectTactics: () => void;
+  onSelectStrategy: () => void;
 }) {
   return (
     <AnimatePresence>
@@ -1514,17 +1531,17 @@ function TrainingChoiceSheet({
 
             <button
               type="button"
-              disabled
-              className="relative min-h-28 overflow-hidden rounded-[24px] border border-slate-700/80 bg-slate-950/70 p-5 text-left opacity-70 shadow-[0_24px_80px_rgba(0,0,0,0.24)]"
+              onClick={onSelectStrategy}
+              className="group relative min-h-28 overflow-hidden rounded-[24px] border border-emerald-400/35 bg-slate-950/86 p-5 text-left shadow-[0_24px_80px_rgba(0,0,0,0.36)] transition hover:border-emerald-200 hover:bg-emerald-300/12"
             >
               <div className="flex items-center justify-between gap-4">
-                <span className="grid size-12 place-items-center rounded-2xl border border-slate-700 bg-slate-900 text-slate-400">
+                <span className="grid size-12 place-items-center rounded-2xl border border-emerald-300/30 bg-emerald-300/10 text-emerald-100">
                   <Trophy size={23} />
                 </span>
-                <span className="rounded-full border border-slate-700 px-3 py-1 text-xs font-black text-slate-500">保留</span>
+                <ChevronRight className="text-slate-500 transition group-hover:text-emerald-100" size={24} />
               </div>
-              <h3 className="mt-4 text-2xl font-black text-slate-300">賽局策略訓練</h3>
-              <p className="mt-2 text-sm font-bold leading-6 text-slate-500">之後接三回合兩勝制與跨局策略。</p>
+              <h3 className="mt-4 text-2xl font-black text-slate-100">賽局策略訓練</h3>
+              <p className="mt-2 text-sm font-bold leading-6 text-slate-400">單獨訓練 aggressive / balanced / defensive 策略層。</p>
             </button>
           </motion.div>
         </motion.div>
@@ -1545,6 +1562,7 @@ export default function LobbyPage() {
   const [currentPage, setCurrentPage] = useState<CurrentPage>(() => getInitialPageFromUrl());
   const [isBattleModeSheetOpen, setIsBattleModeSheetOpen] = useState(false);
   const [isTrainingChoiceOpen, setIsTrainingChoiceOpen] = useState(false);
+  const [initialTrainingScreen, setInitialTrainingScreen] = useState<"tacticsList" | "strategyList">("tacticsList");
   const [appliedTrainingModel, setAppliedTrainingModel] = useState<AppliedTrainingModel | null>(() => loadAppliedTrainingModel());
   const mobileNav = useMemo(() => [...leftNav, ...rightNav], []);
 
@@ -1577,7 +1595,10 @@ export default function LobbyPage() {
     return <NormalBattlePage onBack={handleBackToLobby} appliedTrainingModel={appliedTrainingModel} />;
   }
   if (currentPage === "aiTraining") {
-    return <AITrainingPage onBack={handleBackToLobby} initialScreen="tacticsList" appliedModelId={appliedTrainingModel?.id} onApplyTrainingModel={handleApplyTrainingModel} onRemoveAppliedTrainingModel={handleRemoveAppliedTrainingModel} />;
+    if (initialTrainingScreen === "strategyList") {
+      return <MatchStrategyTrainingPage onBack={handleBackToLobby} initialScreen="strategyList" />;
+    }
+    return <AITrainingPage onBack={handleBackToLobby} initialScreen={initialTrainingScreen} appliedModelId={appliedTrainingModel?.id} onApplyTrainingModel={handleApplyTrainingModel} onRemoveAppliedTrainingModel={handleRemoveAppliedTrainingModel} />;
   }
 
   return (
@@ -1611,6 +1632,12 @@ export default function LobbyPage() {
         onClose={() => setIsTrainingChoiceOpen(false)}
         onSelectTactics={() => {
           setIsTrainingChoiceOpen(false);
+          setInitialTrainingScreen("tacticsList");
+          setCurrentPage("aiTraining");
+        }}
+        onSelectStrategy={() => {
+          setIsTrainingChoiceOpen(false);
+          setInitialTrainingScreen("strategyList");
           setCurrentPage("aiTraining");
         }}
       />
@@ -2742,6 +2769,9 @@ function CenterActionPanel({
   onCancelAllyTarget: () => void;
 }) {
   const canUseBasicAttack = activeCard.currentHp > 0 && activeCard.currentStamina >= BASIC_ATTACK_STAMINA_COST;
+  const canUseShield = activeCard.currentHp > 0 && activeCard.currentStamina >= SHIELD_STAMINA_COST;
+  const canRest = activeCard.currentHp > 0 && activeCard.currentStamina < activeCard.maxStamina && (activeCard.asleepTurns ?? 0) <= 0;
+  const canSwitch = activeCard.currentHp > 0 && activeCard.currentStamina >= SWITCH_STAMINA_COST;
   const actionBlocked = !playerCanAct || Boolean(pendingAllySkill) || Boolean(pendingSwitchTarget);
 
   return (
@@ -2749,7 +2779,7 @@ function CenterActionPanel({
       <div className="grid min-h-0 grid-rows-2 gap-3 overflow-visible">
         <motion.button
           type="button"
-          disabled={actionBlocked}
+          disabled={actionBlocked || !canSwitch}
           onClick={onSwitchPrompt}
           className="h-full rounded-2xl border border-slate-600/80 bg-slate-900/75 px-3 text-left transition hover:border-cyan-300/40 disabled:cursor-not-allowed disabled:opacity-45"
         >
@@ -2757,12 +2787,13 @@ function CenterActionPanel({
             <p className="text-sm font-black text-white">{battleUiText.switchCard}</p>
             <ChevronRight className="text-cyan-100" size={18} />
           </div>
-          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{battleUiText.switchHint}</p>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{battleUiText.switchHint} / {battleUiText.stamina} {SWITCH_STAMINA_COST}</p>
+          {!canSwitch && <p className="mt-1 text-[10px] font-black text-rose-200">{battleUiText.staminaInsufficient}</p>}
         </motion.button>
 
         <motion.button
           type="button"
-          disabled={actionBlocked}
+          disabled={actionBlocked || !canRest}
           onClick={onRest}
           className="h-full rounded-2xl border border-sky-300/35 bg-sky-300/10 px-3 text-left transition hover:border-sky-200/60 disabled:cursor-not-allowed disabled:opacity-45"
         >
@@ -2771,6 +2802,7 @@ function CenterActionPanel({
             <BatteryCharging className="text-cyan-100" size={18} />
           </div>
           <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{battleUiText.restHint}</p>
+          {!canRest && <p className="mt-1 text-[10px] font-black text-rose-200">{activeCard.currentStamina >= activeCard.maxStamina ? "體力已滿" : battleUiText.staminaInsufficient}</p>}
         </motion.button>
       </div>
 
@@ -2836,7 +2868,7 @@ function CenterActionPanel({
 
         <motion.button
           type="button"
-          disabled={!playerCanAct || (playerShielded && !pendingAllySkill && !pendingSwitchTarget)}
+          disabled={!playerCanAct || (!pendingAllySkill && !pendingSwitchTarget && (playerShielded || !canUseShield))}
           onClick={pendingAllySkill ? onCancelAllyTarget : onShield}
           className="h-full rounded-2xl border border-cyan-300/35 bg-cyan-300/10 px-3 text-left transition hover:border-cyan-200/60 disabled:cursor-not-allowed disabled:opacity-45"
         >
@@ -2844,7 +2876,8 @@ function CenterActionPanel({
             <p className="text-sm font-black text-white">{pendingAllySkill ? battleUiText.cancelTarget : pendingSwitchTarget ? battleUiText.cancelSwitch : battleUiText.shield}</p>
             <Shield className="text-cyan-100" size={18} />
           </div>
-          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{pendingAllySkill ? battleUiText.chooseAllyHint : pendingSwitchTarget ? (pendingSwitchTarget.forced ? battleUiText.chooseForcedSwitchTarget : battleUiText.chooseSwitchHint) : battleUiText.shieldReduction}</p>
+          <p className="mt-2 text-xs font-bold leading-5 text-slate-400">{pendingAllySkill ? battleUiText.chooseAllyHint : pendingSwitchTarget ? (pendingSwitchTarget.forced ? battleUiText.chooseForcedSwitchTarget : battleUiText.chooseSwitchHint) : `下次受傷降低 40% / ${battleUiText.stamina} ${SHIELD_STAMINA_COST}`}</p>
+          {!pendingAllySkill && !pendingSwitchTarget && !canUseShield && <p className="mt-1 text-[10px] font-black text-rose-200">{battleUiText.staminaInsufficient}</p>}
         </motion.button>
       </div>
     </div>
@@ -3039,6 +3072,8 @@ function NormalBattlePage({
   const availablePokemon = useMemo(() => getBattleEnabledPokemon(), []);
   const [phase, setPhase] = useState<NormalBattlePhase>("normalBattleRoom");
   const [currentPicker, setCurrentPicker] = useState<DraftPickSide>("player");
+  const [matchDraftFirstPicker, setMatchDraftFirstPicker] = useState<DraftPickSide>("player");
+  const [draftPool, setDraftPool] = useState<PokemonStats[]>(() => shufflePokemon(availablePokemon));
   const [playerDraftIds, setPlayerDraftIds] = useState<number[]>([]);
   const [computerDraftIds, setComputerDraftIds] = useState<number[]>([]);
   const [globalPickedIds, setGlobalPickedIds] = useState<number[]>([]);
@@ -3058,7 +3093,7 @@ function NormalBattlePage({
   const [roundWinner, setRoundWinner] = useState<BattleSide | null>(null);
   const [matchWinner, setMatchWinner] = useState<BattleSide | null>(null);
   const [interRoundSecondsLeft, setInterRoundSecondsLeft] = useState(INTER_ROUND_SECONDS);
-  const [playerShielded, setPlayerShielded] = useState(false);
+  const [, setPlayerShielded] = useState(false);
   const [pendingAllySkill, setPendingAllySkill] = useState<PendingAllySkill | null>(null);
   const [pendingSwitchTarget, setPendingSwitchTarget] = useState<PendingSwitchTarget | null>(null);
   const [hasComputerOpponent, setHasComputerOpponent] = useState(false);
@@ -3084,7 +3119,6 @@ function NormalBattlePage({
   const scoreText = `玩家 ${roundWins.player} - ${roundWins.computer} 電腦`;
   const roundText = `第 ${currentRound} 局`;
 
-  const draftPool = useMemo(() => shufflePokemon(availablePokemon), [availablePokemon]);
   const filteredDraftPool = useMemo(() => {
     const hasActiveFilter = selectedDraftTypeFilters.length > 0 || selectedDraftRoleFilter !== "all";
 
@@ -3199,9 +3233,10 @@ function NormalBattlePage({
     setLeadSelectionSecondsLeft(LEAD_SELECTION_SECONDS);
     setLeadSelection({ playerIndex: null, computerIndex: null, playerLocked: false, computerLocked: false, revealed: false });
     setTurn({ attacker: "player", secondsLeft: TURN_SECONDS, locked: false, message: "請準備開始對戰。" });
+    setMatchDraftFirstPicker("player");
   }, [clearBattleAnimationTimers, clearBattleStartIntroTimers, clearLeadSelectionTimers]);
 
-  function resetRoundSetup() {
+  function resetRoundSetup(firstPicker: DraftPickSide) {
     clearBattleAnimationTimers();
     clearBattleStartIntroTimers();
     clearLeadSelectionTimers();
@@ -3211,7 +3246,8 @@ function NormalBattlePage({
     cpuPickPreviewTimerRef.current = null;
     cpuDraftTimerRef.current = null;
     battleStartTimerRef.current = null;
-    setCurrentPicker("player");
+    setCurrentPicker(firstPicker);
+    setDraftPool(shufflePokemon(availablePokemon));
     setPlayerDraftIds([]);
     setComputerDraftIds([]);
     setGlobalPickedIds([]);
@@ -3237,7 +3273,9 @@ function NormalBattlePage({
   }
 
   function enterDraftRoom() {
-    resetRoundSetup();
+    const firstPicker: DraftPickSide = Math.random() < 0.5 ? "player" : "computer";
+    setMatchDraftFirstPicker(firstPicker);
+    resetRoundSetup(firstPicker);
     setCurrentRound(1);
     setRoundWins({ player: 0, computer: 0 });
     setMatchWinner(null);
@@ -3246,8 +3284,9 @@ function NormalBattlePage({
   }
 
   function prepareNextRound() {
-    resetRoundSetup();
-    setCurrentRound((round) => Math.min(3, round + 1));
+    const nextRound = Math.min(3, currentRound + 1);
+    resetRoundSetup(getRoundFirstPicker(matchDraftFirstPicker, nextRound));
+    setCurrentRound(nextRound);
     setInterRoundSecondsLeft(INTER_ROUND_SECONDS);
     setPhase("draftSelection");
   }
@@ -3280,8 +3319,6 @@ function NormalBattlePage({
 
       const nextPlayerIds = [...playerDraftIds, pendingId];
       const nextPickedIds = [...globalPickedIds, pendingId];
-      const availableForCpu = draftPool.filter((pokemon) => !nextPickedIds.includes(pokemon.id));
-      const selectedCpuPokemon = chooseComputerDraftPokemon(availableForCpu, computerBattleMode);
 
       setPlayerDraftIds(nextPlayerIds);
       setGlobalPickedIds(nextPickedIds);
@@ -3289,32 +3326,8 @@ function NormalBattlePage({
       setPendingComputerPickId(null);
       setCurrentPicker("computer");
       setDraftSecondsLeft(DRAFT_SECONDS);
-
-      cpuPickPreviewTimerRef.current = window.setTimeout(() => {
-        if (selectedCpuPokemon) setPendingComputerPickId(selectedCpuPokemon.id);
-      }, (DRAFT_SECONDS - CPU_PICK_PREVIEW_SECONDS) * 1000);
-
-      cpuDraftTimerRef.current = window.setTimeout(() => {
-        let nextComputerIds = [...computerDraftIds];
-        let finalPickedIds = [...nextPickedIds];
-
-        if (nextComputerIds.length < REQUIRED_TEAM_SIZE && selectedCpuPokemon) {
-          nextComputerIds = [...nextComputerIds, selectedCpuPokemon.id];
-          finalPickedIds = [...finalPickedIds, selectedCpuPokemon.id];
-        }
-
-        setComputerDraftIds(nextComputerIds);
-        setGlobalPickedIds(finalPickedIds);
-        setPendingComputerPickId(null);
-        setCurrentPicker("player");
-        setDraftSecondsLeft(DRAFT_SECONDS);
-        if (nextPlayerIds.length >= REQUIRED_TEAM_SIZE && nextComputerIds.length >= REQUIRED_TEAM_SIZE) {
-          setBattleReadySecondsLeft(BATTLE_READY_SECONDS);
-          return;
-        }
-      }, (DRAFT_SECONDS - CPU_PICK_LOCK_SECONDS) * 1000);
     },
-    [computerBattleMode, computerDraftIds, currentPicker, draftPool, globalPickedIds, pendingPlayerPickId, playerDraftIds],
+    [currentPicker, globalPickedIds, pendingPlayerPickId, playerDraftIds],
   );
 
   const openDraftTypeFilterDialog = () => {
@@ -3416,6 +3429,46 @@ function NormalBattlePage({
     const timer = window.setInterval(() => setDraftSecondsLeft((current) => Math.max(0, current - 1)), 1000);
     return () => window.clearInterval(timer);
   }, [phase, teamsReady]);
+
+  useEffect(() => {
+    if (phase !== "draftSelection" || currentPicker !== "computer" || teamsReady || computerDraftIds.length >= REQUIRED_TEAM_SIZE) return;
+    if (cpuPickPreviewTimerRef.current) window.clearTimeout(cpuPickPreviewTimerRef.current);
+    if (cpuDraftTimerRef.current) window.clearTimeout(cpuDraftTimerRef.current);
+
+    const availableForCpu = draftPool.filter((pokemon) => !globalPickedIds.includes(pokemon.id));
+    const selectedCpuPokemon = chooseComputerDraftPokemon(availableForCpu, computerBattleMode);
+
+    cpuPickPreviewTimerRef.current = window.setTimeout(() => {
+      if (selectedCpuPokemon) setPendingComputerPickId(selectedCpuPokemon.id);
+    }, (DRAFT_SECONDS - CPU_PICK_PREVIEW_SECONDS) * 1000);
+
+    cpuDraftTimerRef.current = window.setTimeout(() => {
+      let nextComputerIds = [...computerDraftIds];
+      let nextPickedIds = [...globalPickedIds];
+
+      if (selectedCpuPokemon && !nextPickedIds.includes(selectedCpuPokemon.id)) {
+        nextComputerIds = [...nextComputerIds, selectedCpuPokemon.id];
+        nextPickedIds = [...nextPickedIds, selectedCpuPokemon.id];
+      }
+
+      setComputerDraftIds(nextComputerIds);
+      setGlobalPickedIds(nextPickedIds);
+      setPendingComputerPickId(null);
+      setCurrentPicker("player");
+      setDraftSecondsLeft(DRAFT_SECONDS);
+
+      if (playerDraftIds.length >= REQUIRED_TEAM_SIZE && nextComputerIds.length >= REQUIRED_TEAM_SIZE) {
+        setBattleReadySecondsLeft(BATTLE_READY_SECONDS);
+      }
+    }, (DRAFT_SECONDS - CPU_PICK_LOCK_SECONDS) * 1000);
+
+    return () => {
+      if (cpuPickPreviewTimerRef.current) window.clearTimeout(cpuPickPreviewTimerRef.current);
+      if (cpuDraftTimerRef.current) window.clearTimeout(cpuDraftTimerRef.current);
+      cpuPickPreviewTimerRef.current = null;
+      cpuDraftTimerRef.current = null;
+    };
+  }, [computerBattleMode, computerDraftIds, currentPicker, draftPool, globalPickedIds, phase, playerDraftIds.length, teamsReady]);
 
   useEffect(() => {
     return () => {
@@ -3559,6 +3612,16 @@ function NormalBattlePage({
 
   useEffect(() => {
     if (phase !== "battleArena" || winner || turn.locked || turn.attacker !== "player" || turn.secondsLeft > 0 || !participants) return;
+    if (pendingSwitchTarget?.forced) {
+      const fallbackIndex = getLivingIndex(participants.player.team, participants.player.activeIndex);
+      if (fallbackIndex >= 0) switchPlayerPokemon(fallbackIndex);
+      return;
+    }
+    if (pendingSwitchTarget) {
+      setPendingSwitchTarget(null);
+      setTurn((current) => ({ ...current, secondsLeft: TURN_SECONDS, message: "更換逾時，請重新行動。" }));
+      return;
+    }
     const active = participants.player.team[participants.player.activeIndex];
     const playerSkills = getPokemonSkills(active.pokemon).filter((skill) => canUseSkill(active, skill));
     const skill = playerSkills.find((item) => item.category === "attack") ?? playerSkills[0];
@@ -3903,8 +3966,10 @@ function NormalBattlePage({
       }
 
       if ((nextDefender.shieldTurns ?? 0) > 0) {
-        damage = Math.max(1, Math.floor(damage * 0.5));
+        const shieldReduction = nextDefender.shieldDamageReduction ?? SKILL_SHIELD_DAMAGE_REDUCTION;
+        damage = Math.max(1, Math.floor(damage * (1 - shieldReduction)));
         nextDefender.shieldTurns = 0;
+        nextDefender.shieldDamageReduction = undefined;
         effectMessages.push("護盾吸收了部分傷害。");
       }
 
@@ -3975,10 +4040,7 @@ function NormalBattlePage({
       }
     }
 
-    const consumePlayerShield = defenderSide === "player" && playerShielded && damage > 0;
-    if (consumePlayerShield) {
-      damage = Math.max(1, Math.floor(damage * 0.5));
-    }
+    const consumePlayerShield = false;
 
     if (
       result.isHit &&
@@ -4007,6 +4069,7 @@ function NormalBattlePage({
 
       if (skill.effect === "shield_self") {
         nextAttacker.shieldTurns = 1;
+        nextAttacker.shieldDamageReduction = SKILL_SHIELD_DAMAGE_REDUCTION;
         effectMessages.push(`${getPokemonLabel(nextAttacker.pokemon)} 展開護盾。`);
       }
 
@@ -4116,6 +4179,11 @@ function NormalBattlePage({
 
   function switchComputerPokemon(index: number) {
     if (!participants || turn.attacker !== "computer" || turn.locked || winner) return;
+    const active = participants.computer.team[participants.computer.activeIndex];
+    if (active.currentStamina < SWITCH_STAMINA_COST) {
+      restBattleTurn("computer");
+      return;
+    }
     const selected = participants.computer.team[index];
     if (!selected || selected.currentHp <= 0 || index === participants.computer.activeIndex) {
       restBattleTurn("computer");
@@ -4128,9 +4196,11 @@ function NormalBattlePage({
     const selectedNext = nextComputer.team[index];
     const abilityMessages: string[] = [];
 
-    if (previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator") {
+    previousActive.currentStamina = Math.max(0, previousActive.currentStamina - SWITCH_STAMINA_COST);
+    if (previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator" && !previousActive.regeneratorUsed) {
       const healAmount = healBattleCard(previousActive, 0.1);
       if (healAmount > 0) abilityMessages.push(`特性「${getAbilityLabel(previousActive.pokemon)}」發動，回復 ${healAmount} HP。`);
+      previousActive.regeneratorUsed = true;
     }
 
     clearPositiveBattleBuffs(previousActive);
@@ -4145,7 +4215,7 @@ function NormalBattlePage({
       previousCard: previousActive,
       selectedIndex: index,
       nextTurnSide: "player",
-      message: `電腦更換為 ${getPokemonLabel(selectedNext.pokemon)}。`,
+      message: `電腦更換為 ${getPokemonLabel(selectedNext.pokemon)}，消耗 ${SWITCH_STAMINA_COST} 體力。`,
       abilityMessages,
     });
   }
@@ -4197,11 +4267,13 @@ function NormalBattlePage({
     if (!participants || turn.attacker !== "computer" || turn.locked || winner) return;
     const nextParticipants = cloneParticipants(participants);
     const computerActive = nextParticipants.computer.team[nextParticipants.computer.activeIndex];
-    if ((computerActive.shieldTurns ?? 0) > 0) {
+    if ((computerActive.shieldTurns ?? 0) > 0 || computerActive.currentStamina < SHIELD_STAMINA_COST) {
       restBattleTurn("computer");
       return;
     }
+    computerActive.currentStamina = Math.max(0, computerActive.currentStamina - SHIELD_STAMINA_COST);
     computerActive.shieldTurns = 1;
+    computerActive.shieldDamageReduction = GENERIC_SHIELD_DAMAGE_REDUCTION;
     const shieldSkill: Skill = {
       id: "computer_shield_action",
       name: "Shield",
@@ -4212,9 +4284,9 @@ function NormalBattlePage({
       accuracy: 100,
       effect: "shield_self",
       target: "self",
-      description_zh: battleUiText.shieldReduction,
+      description_zh: "下次受傷降低 40%",
     };
-    const message = `電腦的 ${getPokemonLabel(computerActive.pokemon)} 啟動護盾。`;
+    const message = `電腦的 ${getPokemonLabel(computerActive.pokemon)} 啟動護盾，消耗 ${SHIELD_STAMINA_COST} 體力。`;
 
     setPendingAllySkill(null);
     setPendingSwitchTarget(null);
@@ -4228,16 +4300,15 @@ function NormalBattlePage({
       skill: shieldSkill,
       damage: 0,
       typeMultiplier: 1,
-      effectivenessText: battleUiText.shieldReduction,
+      effectivenessText: "下次受傷降低 40%",
       isHit: true,
       message,
       finalMessage: message,
       abilityMessages: [],
       nextParticipants,
-      skipHandoff: true,
       actionTitle: `${getPokemonLabel(computerActive.pokemon)} 啟動護盾！`,
       actionSubtitle: "Defense Ready",
-      effectLabel: battleUiText.shieldReduction,
+      effectLabel: "下次受傷降低 40%",
     });
   }
 
@@ -4247,6 +4318,36 @@ function NormalBattlePage({
     const nextParticipants = cloneParticipants(participants);
     const restingParticipant = nextParticipants[side];
     const restingCard = restingParticipant.team[restingParticipant.activeIndex];
+    const actionBlockedMessage = consumeActionBlocker(restingCard);
+    if (actionBlockedMessage) {
+      setPendingAllySkill(null);
+      setPendingSwitchTarget(null);
+      setTurn((current) => ({ ...current, locked: true }));
+      startBattleActionTimeline({
+        actionType: "rest",
+        attackerSide: side,
+        defenderSide,
+        attackerName: getPokemonLabel(restingCard.pokemon),
+        defenderName: getPokemonLabel(nextParticipants[defenderSide].team[nextParticipants[defenderSide].activeIndex].pokemon),
+        skill: createRestSkill(restingCard),
+        damage: 0,
+        typeMultiplier: 1,
+        effectivenessText: "行動失敗",
+        isHit: true,
+        message: `${getPokemonLabel(restingCard.pokemon)} ${actionBlockedMessage}`,
+        finalMessage: `${getPokemonLabel(restingCard.pokemon)} ${actionBlockedMessage}`,
+        abilityMessages: [],
+        nextParticipants,
+        actionTitle: `${getPokemonLabel(restingCard.pokemon)} 行動失敗`,
+        actionSubtitle: "Blocked",
+        effectLabel: "行動失敗",
+      });
+      return;
+    }
+    if (restingCard.currentStamina >= restingCard.maxStamina) {
+      setTurn((current) => ({ ...current, message: `${getPokemonLabel(restingCard.pokemon)} 體力已滿，無法休息。` }));
+      return;
+    }
     const restRecovered = recoverStamina(restingCard, REST_STAMINA_RECOVERY);
     const message = `${getPokemonLabel(restingCard.pokemon)} 選擇休息，回復 ${restRecovered} 體力。`;
 
@@ -4277,6 +4378,11 @@ function NormalBattlePage({
 
   function openSwitchTargetOverlay() {
     if (!participants || turn.attacker !== "player" || turn.locked || winner || pendingAllySkill) return;
+    const active = participants.player.team[participants.player.activeIndex];
+    if (active.currentStamina < SWITCH_STAMINA_COST) {
+      setTurn((current) => ({ ...current, message: `${getPokemonLabel(active.pokemon)} 體力不足，無法更換夥伴（需要 ${SWITCH_STAMINA_COST} 體力）。` }));
+      return;
+    }
     const hasSwitchTarget = participants.player.team.some((card, index) => index !== participants.player.activeIndex && card.currentHp > 0);
     if (!hasSwitchTarget) {
       setTurn((current) => ({ ...current, message: "沒有可更換的備戰夥伴。" }));
@@ -4298,9 +4404,17 @@ function NormalBattlePage({
     const selectedNext = nextPlayer.team[index];
     const abilityMessages: string[] = [];
 
-    if (!forcedSwitch && previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator") {
+    if (!forcedSwitch && previousActive.currentStamina < SWITCH_STAMINA_COST) {
+      setTurn((current) => ({ ...current, message: `${getPokemonLabel(previousActive.pokemon)} 體力不足，無法更換夥伴（需要 ${SWITCH_STAMINA_COST} 體力）。` }));
+      return;
+    }
+
+    if (!forcedSwitch) previousActive.currentStamina = Math.max(0, previousActive.currentStamina - SWITCH_STAMINA_COST);
+
+    if (!forcedSwitch && previousActive.currentHp > 0 && previousActive.pokemon.ability_id === "regenerator" && !previousActive.regeneratorUsed) {
       const healAmount = healBattleCard(previousActive, 0.1);
       if (healAmount > 0) abilityMessages.push(`特性「${getAbilityLabel(previousActive.pokemon)}」發動，回復 ${healAmount} HP。`);
+      previousActive.regeneratorUsed = true;
     }
 
     clearPositiveBattleBuffs(previousActive);
@@ -4313,7 +4427,7 @@ function NormalBattlePage({
     const selectedName = getPokemonLabel(selectedNext.pokemon);
     const message = forcedSwitch
       ? `${pendingSwitchTarget?.message ?? "你派出下一位夥伴。"} 你選擇 ${selectedName} 出場。`
-      : `你更換為 ${selectedName}。`;
+      : `你更換為 ${selectedName}，消耗 ${SWITCH_STAMINA_COST} 體力。`;
     const nextTurnSide = pendingSwitchTarget?.nextTurnSide ?? "computer";
 
     startSwitchEntryTimeline({
@@ -4329,7 +4443,9 @@ function NormalBattlePage({
   }
 
   function activatePlayerShield() {
-    if (!participants || turn.attacker !== "player" || turn.locked || playerShielded) return;
+    if (!participants || turn.attacker !== "player" || turn.locked) return;
+    const currentPlayerActive = participants.player.team[participants.player.activeIndex];
+    if ((currentPlayerActive.shieldTurns ?? 0) > 0) return;
     if (pendingSwitchTarget) {
       setPendingSwitchTarget(null);
       setTurn((current) => ({ ...current, message: "已取消更換。" }));
@@ -4342,6 +4458,16 @@ function NormalBattlePage({
     }
     const nextParticipants = cloneParticipants(participants);
     const playerActive = nextParticipants.player.team[nextParticipants.player.activeIndex];
+    if (playerActive.currentHp <= 0 || playerActive.currentStamina < SHIELD_STAMINA_COST) {
+      setTurn((current) => ({
+        ...current,
+        message: `${getPokemonLabel(playerActive.pokemon)} 體力不足，無法啟動護盾（需要 ${SHIELD_STAMINA_COST} 體力）。`,
+      }));
+      return;
+    }
+    playerActive.currentStamina = Math.max(0, playerActive.currentStamina - SHIELD_STAMINA_COST);
+    playerActive.shieldTurns = 1;
+    playerActive.shieldDamageReduction = GENERIC_SHIELD_DAMAGE_REDUCTION;
     const shieldSkill: Skill = {
       id: "player_shield_action",
       name: "Shield",
@@ -4352,11 +4478,11 @@ function NormalBattlePage({
       accuracy: 100,
       effect: "shield_self",
       target: "self",
-      description_zh: battleUiText.shieldReduction,
+      description_zh: "下次受傷降低 40%",
     };
-    const message = "玩家啟動護盾，本回合可降低受到的傷害。";
+    const message = `玩家啟動護盾，消耗 ${SHIELD_STAMINA_COST} 體力，下一次受傷降低 40%。`;
 
-    setPlayerShielded(true);
+    setPlayerShielded(false);
     setTurn((current) => ({ ...current, locked: true, message }));
     startBattleActionTimeline({
       actionType: "shield",
@@ -4367,16 +4493,15 @@ function NormalBattlePage({
       skill: shieldSkill,
       damage: 0,
       typeMultiplier: 1,
-      effectivenessText: battleUiText.shieldReduction,
+      effectivenessText: "下次受傷降低 40%",
       isHit: true,
       message,
       finalMessage: message,
       abilityMessages: [],
       nextParticipants,
-      skipHandoff: true,
       actionTitle: "玩家啟動護盾！",
       actionSubtitle: "Defense Ready",
-      effectLabel: battleUiText.shieldReduction,
+      effectLabel: "下次受傷降低 40%",
     });
   }
 
@@ -4638,6 +4763,7 @@ function NormalBattlePage({
     const computerActive = participants.computer.team[participants.computer.activeIndex];
     const playerSkills = getPokemonSkills(playerActive.pokemon);
     const playerCanAct = turn.attacker === "player" && !turn.locked && !battleStartIntro && playerActive.currentHp > 0;
+    const playerShielded = (playerActive.shieldTurns ?? 0) > 0;
     const timelineActive = Boolean(battleAnimation) || Boolean(battleStartIntro);
     const battleArenaAura =
       turn.attacker === "computer"
@@ -4709,7 +4835,7 @@ function NormalBattlePage({
                     activeIndex={participants.player.activeIndex}
                     side="player"
                     battleAnimation={battleAnimation}
-                    canSwitch={playerCanAct && !pendingAllySkill && !pendingSwitchTarget}
+                    canSwitch={playerCanAct && playerActive.currentStamina >= SWITCH_STAMINA_COST && !pendingAllySkill && !pendingSwitchTarget}
                     canTargetAlly={false}
                     activeShielded={playerShielded}
                   />
@@ -4907,7 +5033,7 @@ function NormalBattlePage({
                     <div className="grid max-w-3xl grid-cols-5 gap-2">
                       {(Object.keys(computerDifficultyOptions) as ComputerDifficulty[]).map((difficulty) => {
                         const option = computerDifficultyOptions[difficulty];
-                        const selected = appliedTrainingModel?.computerDifficulty === difficulty;
+                        const selected = computerBattleMode === difficulty;
 
                         return (
                           <button

@@ -74,6 +74,9 @@ async function runNextEpisode() {
       opponentAgent: episodeCount < 50 ? RandomAgent : RuleBasedAgent,
       learningSide: "player",
       seed: Date.now() + episodeCount,
+      playerWins: trainingState.wins,
+      computerWins: trainingState.losses,
+      round: ((trainingState.episodes % 3) + 1) as 1 | 2 | 3,
       shouldStop: () => !workerState.training,
     });
 

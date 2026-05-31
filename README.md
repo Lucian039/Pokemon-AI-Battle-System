@@ -4,7 +4,25 @@
 - 前端若存在 `frontend/package-lock.json`，會使用 `npm ci` 依鎖定檔安裝；若沒有鎖定檔，則退回 `npm install`。
 - 使用方式：在 Windows 雙擊 `install_dependencies.bat`，完成後可執行 `start_ui.bat` 或 `start_training.bat`。
 - 輸出格式：批次檔以 `[1/3]`、`[2/3]`、`[3/3]` 顯示安裝階段，訊息使用 ASCII 英文以避免 Windows 批次檔編碼亂碼；任一步失敗會停下並顯示錯誤訊息。
+
 # Pokemon-AI-Battle-System
+
+## 05/25: 補強公平性與反漏洞規則
+- 新增目的：封堵龜縮、免費換牌、狀態異常規避與護盾狀態不同步等可被玩家反覆利用的漏洞。
+- 護盾規範：泛用護盾寫入出戰卡 `shieldTurns`，不再使用玩家專屬平行狀態；泛用護盾減傷 40%，專屬護盾技能減傷 50%。
+- 體力規範：換牌消耗 `SWITCH_STAMINA_COST = 20` 體力；休息只在體力未滿時可用，滿體力不可用休息跳過回合。
+- 狀態規範：睡眠會阻止休息與攻擊類行動；麻痺仍有機率讓休息或技能失敗，不能完全用休息規避。
+- 特性規範：`regenerator` 換下回復一場只觸發一次，避免反覆換牌無限回血。
+- 超時規範：訓練/自動戰鬥達最大回合數時改判平手，不再用總 HP 讓龜縮保血策略直接獲勝。
+- 強制換牌規範：強制換牌使用既有倒數，逾時自動派出第一個可出戰夥伴；非強制換牌逾時會取消選擇並回到玩家行動。
+- 輸出格式：更換夥伴訊息會顯示消耗 20 體力；泛用護盾提示顯示「下次受傷降低 40% / 體力 35」。
+
+## 05/25: 調整護盾與體力平衡
+- 新增目的：避免玩家或 CPU 透過泛用護盾連續拖回合，並讓體力系統在防守行動上也產生實際限制。
+- 規範用法：泛用護盾與護盾類技能統一消耗 `SHIELD_STAMINA_COST = 35` 體力；體力不足時不可選擇護盾，訓練環境的合法 action 也會排除護盾。
+- 回合規則：護盾視為一次完整行動，啟動後會進入對手回合；泛用護盾下一次受到傷害時降低 40% 並消耗護盾。
+- 範例：目前出戰角色只有 30 體力時，護盾按鈕顯示體力不足且不可使用；若有 60 體力，開盾後剩 25 體力並交給對手行動。
+- 輸出格式：玩家與電腦啟動護盾的戰鬥訊息會顯示消耗 35 體力，UI 按鈕提示顯示「下次受傷降低 40% / 體力 35」。
 
 ## 05/23: 加強 v3.1 訓練突破平台期
 - `LearningAgent` 最低探索率由 `0.08` 降為 `0.02`，長訓練後減少隨機壞招對近 500 場勝率的拖累。
@@ -164,10 +182,10 @@
 
 - 新增 `frontend/server/trainingServer.ts`，以 Node/TypeScript 長駐服務執行單局模型訓練，前端關閉後只要後端 PowerShell 視窗仍在，訓練會繼續進行。
 - 新增訓練 API：`GET/POST /api/training/models`、`GET/DELETE /api/training/models/:id`、`POST /start|pause|reset|save|load` 與 `GET /events` SSE 進度串流。
-- `AITrainingPage` 改為前端監控頁，透過 `http://127.0.0.1:8787` 讀取模型列表、建立模型、控制訓練與接收 SSE 更新，不再以瀏覽器 Web Worker 作為主要訓練來源。
+- `AITrainingPage` 改為前端監控頁，透過 `http://127.0.0.1:18053` 讀取模型列表、建立模型、控制訓練與接收 SSE 更新，不再以瀏覽器 Web Worker 作為主要訓練來源。
 - 後端資料保存於 `training_data/models/{modelId}/`，包含 `metadata.json`、`summary.json`、`latest-replay.json`、`model.json` 與 `weights.bin`；後端重啟時會自動掃描恢復模型列表。
 - 新增 `frontend/server/build-training-server.mjs` 與 npm scripts：`server:build` 用 esbuild 打包後端，`server:training` 啟動後端訓練服務。
-- 新增 `start_training.bat`，會建置前端與後端、開啟後端訓練監控 PowerShell，並直接打開 `http://localhost:4173/?page=training`。
+- 新增 `start_training.bat`，會建置後端訓練服務並使用 `http://127.0.0.1:18053` 作為專案專用訓練 API。
 - 新增 URL 入口：`?page=training` 或 `#/training` 會直接進入單局訓練模型列表；原 `start_ui.bat` 大廳入口維持不變。
 
 ## 05/19: 新增訓練 Loss / Epsilon 同步曲線
@@ -461,13 +479,13 @@ npm run dev
 預設開發網址：
 
 ```text
-http://127.0.0.1:5173/
+http://127.0.0.1:18051/
 ```
 
 若該 port 被系統占用，可指定其他 port：
 
 ```bash
-npm run dev -- --port 8001
+npm run dev -- --port 18054
 ```
 
 ## 前端建置

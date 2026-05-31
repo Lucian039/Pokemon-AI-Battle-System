@@ -4,13 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev": "vite --host 127.0.0.1 --port 18051",
     "build": "tsc -b && vite build",
     "server:build": "node server/build-training-server.mjs",
     "server:training": "node server-dist/training-server.mjs",
     "generate:cutouts": "node scripts/generate-cutouts.mjs",
     "generate:pokedex": "node scripts/generate-pokedex-data.mjs",
-    "preview": "vite preview --host 127.0.0.1 --port 4173"
+    "preview": "vite preview --host 127.0.0.1 --port 18052"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

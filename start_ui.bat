@@ -28,8 +28,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Starting preview server at http://localhost:4173
+echo Starting preview server at http://127.0.0.1:18052
 echo Keep this window open while using the LobbyPage.
-start "" "http://localhost:4173"
-call npm.cmd run preview -- --host localhost --port 4173
+start "" "http://127.0.0.1:18052"
+call npm.cmd run preview -- --host 127.0.0.1 --port 18052
 endlocal

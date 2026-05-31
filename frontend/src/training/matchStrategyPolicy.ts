@@ -7,6 +7,10 @@ export interface MatchStrategyContext {
   computerWins: number;
   round: 1 | 2 | 3;
   side: BattleSide;
+  ownTeamHpRatio?: number;
+  opponentTeamHpRatio?: number;
+  leading?: boolean;
+  behind?: boolean;
 }
 
 export interface MatchStrategyDecision {
@@ -25,12 +29,21 @@ function teamHpRatio(state: BattleEnvState, side: BattleSide) {
   return max > 0 ? current / max : 0;
 }
 
-export function decideMatchStrategy(state: BattleEnvState, context: MatchStrategyContext): MatchStrategyDecision {
+export function createMatchStrategyContext(state: BattleEnvState, context: MatchStrategyContext): MatchStrategyContext {
   const opponentSide = getOpponentSide(context.side);
-  const ownHpRatio = teamHpRatio(state, context.side);
-  const opponentHpRatio = teamHpRatio(state, opponentSide);
+  const ownTeamHpRatio = teamHpRatio(state, context.side);
+  const opponentTeamHpRatio = teamHpRatio(state, opponentSide);
   const leading = context.side === "player" ? context.playerWins > context.computerWins : context.computerWins > context.playerWins;
   const behind = context.side === "player" ? context.playerWins < context.computerWins : context.computerWins < context.playerWins;
+  return { ...context, ownTeamHpRatio, opponentTeamHpRatio, leading, behind };
+}
+
+export function decideMatchStrategy(state: BattleEnvState, context: MatchStrategyContext): MatchStrategyDecision {
+  const opponentSide = getOpponentSide(context.side);
+  const ownHpRatio = context.ownTeamHpRatio ?? teamHpRatio(state, context.side);
+  const opponentHpRatio = context.opponentTeamHpRatio ?? teamHpRatio(state, opponentSide);
+  const leading = context.leading ?? (context.side === "player" ? context.playerWins > context.computerWins : context.computerWins > context.playerWins);
+  const behind = context.behind ?? (context.side === "player" ? context.playerWins < context.computerWins : context.computerWins < context.playerWins);
 
   if (leading && ownHpRatio >= opponentHpRatio * 0.85) {
     return {

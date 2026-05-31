@@ -455,7 +455,7 @@ MM/DD: 變更標題
 - 修改項目：複製模型時將 `trainingState.currentReplay` 清空；後端 episode abort 與 `pause` 會清空 `currentReplay`；`AITrainingPage` 只有在 `workerState.training === true` 時才取用 replay 並推進 `eventIndex`。
 - 影響範圍：`frontend/server/trainingServer.ts` 的 clone、pause、abort 流程；`frontend/src/training/trainingLoop.ts` 的 aborted reduce；`frontend/src/pages/AITrainingPage.tsx` 的 replay 播放條件。
 - 規範用法：模型監控頁的 replay 是訓練中的即時視覺化資料；paused、剛進入、複製後進入都必須維持靜止，不得顯示動作脈衝。
-- 驗證方式：執行 `npm.cmd run build` 與 `npm.cmd run server:build`，重啟 8787 訓練服務後確認模型狀態為 `paused` 且前端只在 `workerState.training` 為 true 時播放 replay。
+- 驗證方式：執行 `npm.cmd run build` 與 `npm.cmd run server:build`，重啟 18053 訓練服務後確認模型狀態為 `paused` 且前端只在 `workerState.training` 為 true 時播放 replay。
 
 ## 05/20: 一般對戰載入完成模型權重
 
@@ -539,6 +539,98 @@ MM/DD: 變更標題
 - 修改項目：`trainingLoop` 的 reward shaping 補強攻擊、治療、無效 setup 與終局血量差，讓模型更重視收頭、保血與高品質勝局。
 - 規範用法：這層戰術先驗只作為 Q 值排序輔助，不取代模型；既有 v3 權重可繼續載入訓練，後續 episode 會逐步套用新的探索率與 reward。
 - 輸出格式：主畫面仍以近 500 場勝率作為主要判讀指標；若加強有效，應先看到 `recentWinRate500` 往上，再看總勝率緩慢追上。
+## 05/25: 新增 Metrics Report 單頁排版與圖表安全留白
+- 新增功能：完成訓練後的 Metrics Report 改為單頁儀表板排版，曲線圖置於上方主要區塊，所有 summary 數據以多欄緊湊卡片呈現在同一個 modal 視窗內，避免右側清單需要滾動才看得到完整資料。
+- 範例：`GET /api/training/models/:id/metrics-report` 回傳 `{ chartSvg, summary }` 後，前端直接將 `chartSvg` 填入上方圖表區，並將 `summary` 內的 Episodes、Win Rate、Recent Win Rate、Loss、Epsilon、訓練時間、目標等數據渲染為同頁卡片。
+- 規範用法：`MetricsReportModal` 不再使用左右分欄長清單；報表容器高度固定為目前視窗高度，內容採 `grid-rows-[minmax(0,1fr)_auto]`，確保圖表與數據區同時可見。
+- 輸出格式：`chartSvg` 的 SVG viewBox 維持 `1180x680`，但繪圖區 top padding 提高至 `172`，保留標題、Episode、Loss / Epsilon / Recent500 摘要文字的安全距離，避免曲線與上方文字重疊。
+- 05/25 追加調整：Metrics Report 改為圖片左、數據右的同頁版面；右側移除訓練完成狀態卡；`chartSvg` 不再輸出模型名稱，模型名稱僅保留在 modal 標題列。
+- 驗證：`npm.cmd run build` 通過；`npm.cmd run server:build` 通過。Vite 仍提示 bundle chunk 超過 500 kB，屬既有建置警告。
+## 05/25: 新增訓練模型設定功能
+- 新增功能：在訓練執行頁的模型名稱與 Model Goal 區塊加入模型設定按鈕，可修改目前模型的名稱與該模型對應的難度。
+- API：新增 `PATCH /api/training/models/:id`，body 範例 `{ "name": "BattleTacticsAgent 1", "difficulty": "hard" }`。
+- 輸出格式：API 回傳既有 `BackendTrainingPayload`，包含更新後的 `model`、`trainingState`、`workerState` 與 `completed`。
+- 規範用法：更新難度時同步重算 `targetEpisodes`，並將資料持久化到 `training_data/models/{modelId}/metadata.json` 與 `summary.json`。
+- 使用方式：在 Training Run 畫面點擊模型名稱旁或 Model Goal 右上設定按鈕，調整名稱與難度後按「儲存設定」。
+- 驗證：`npm.cmd run build` 通過；`npm.cmd run server:build` 在沙盒外通過。Vite 仍提示 bundle chunk 超過 500 kB，屬既有建置警告。
+
+## 05/25: 調整護盾與體力平衡
+- 新增目的：防止泛用護盾因無成本與不交棒造成連續開盾，讓護盾成為高價值防守決策，而不是免費循環。
+- 規範用法：護盾類技能與泛用護盾統一使用 `SHIELD_STAMINA_COST = 35`；一般戰鬥 UI、CPU 行動、訓練合法 action 與 `stepBattle()` 都必須檢查體力成本。
+- 回合規則：護盾啟動後交給對手行動；泛用護盾下一次受到傷害時減傷 40% 並消耗護盾狀態。
+- 範例：訓練環境中 active 角色體力低於 35 時，`getLegalActions()` 不回傳 `{ type: "shield" }`；一般模式中玩家護盾按鈕顯示體力不足並停用。
+- 輸出格式：戰鬥訊息需包含「消耗 35 體力」，UI 提示需顯示「下次受傷降低 40% / 體力 35」。
+
+## 05/25: 補強公平性與反漏洞規則
+- 新增目的：避免模型或玩家學到龜縮保血、滿體休息跳回合、免費換牌、再生力循環回血與玩家護盾不可見等漏洞策略。
+- 規範用法：`BattleCardState` 新增 `shieldDamageReduction` 與 `regeneratorUsed`；泛用護盾使用 40% 減傷，專屬護盾技能使用 50% 減傷，所有護盾都寫回同一個卡片狀態。
+- 體力規則：新增 `SWITCH_STAMINA_COST = 20`，非強制換牌必須有足夠體力並扣除成本；休息只在 `currentStamina < maxStamina` 時列為合法 action。
+- 狀態規則：休息也會執行 `consumeActionBlocker()`，睡眠與麻痺不能透過休息完全規避。
+- 特性規則：`regenerator` 透過 `regeneratorUsed` 限制每場只觸發一次，防止反覆換牌回血。
+- 超時規則：`resolveWinner()` 達最大回合數時直接判平手，避免以 HP 領先拖到超時成為最佳策略。
+- 輸出格式：訓練 replay 中換牌、休息、護盾會反映新的合法行動集合；體力不足時不會回傳對應 action。
+
+## 05/25: 調整訓練啟動批次檔只開啟後端
+- 變更目的：讓 `start_training.bat` 只啟動後端訓練服務，避免使用者執行訓練批次檔時額外開啟前端 preview 或瀏覽器頁面。
+- 修改項目：移除 `npm.cmd run build`、自動開啟舊版 `http://localhost:4173/?page=training` 與 `npm.cmd run preview` 流程；保留依賴檢查、`npm.cmd run server:build` 與 `npm.cmd run server:training`。
+- 規範用法：需要訓練後端時執行 `start_training.bat`，服務位置改為專案專用 `http://127.0.0.1:18053`；前端介面需另外用既有前端啟動流程開啟。
+- 輸出格式：批次檔只保留後端服務視窗，畫面提示使用者保持該視窗開啟以維持後端訓練服務。
+- 驗證方式：檢查 `start_training.bat` 不再包含 `npm.cmd run preview` 與瀏覽器自動開啟指令；後端仍透過 `npm.cmd run server:training` 啟動。
+
+## 05/25: 調整訓練模型列表排序
+- 新增目的：訓練模型列表固定依模型 `createdAt` 由最早建立到最晚建立排序，避免後端重啟後受檔案系統讀取順序影響。
+- 修改項目：`GET /api/training/models` 回傳前會依 `createdAt` 遞增排序；前端 `AITrainingPage` 在讀取、新增與複製模型後也會套用相同排序。
+- 範例：若模型建立時間依序為 `2026-05-20T08:00:00.000Z`、`2026-05-22T08:00:00.000Z`、`2026-05-25T08:00:00.000Z`，列表會依此順序由上到下顯示。
+- 規範用法：排序主鍵為 `createdAt`；若時間無效會排到最後，同時間則以 `id` 作為穩定排序依據。
+- 輸出格式：`GET /api/training/models` 維持 `{ models: TacticsModelRecord[] }`，僅調整 `models` 陣列順序，不新增欄位。
+## 05/25: 新增單局戰術與賽局策略分層
+- 變更目的：保留既有 `LearningAgent` 單局戰術模型，新增規則式 `MatchStrategyPolicy` 作為賽局策略層，讓訓練 episode 依目前比分、回合序與隊伍血量狀態產生 `aggressive`、`balanced` 或 `defensive` 策略。
+- 修改項目：`MatchStrategyPolicy` 新增完整策略上下文與隊伍血量比例；`LearningAgent.selectAction()` 新增可選 `strategyDecision`，只在 exploitation 排序時把 `actionBias` 加到合法動作分數；epsilon 隨機探索仍只從合法動作中抽選。
+- 規範用法：策略層只輸出小幅 action bias，不改 `STATE_VECTOR_SIZE = 96`、`ACTION_VECTOR_SIZE = 10`，也不改模型保存版本 `battle-tactics-v3-rules`。防守策略偏向 `shield/rest/switch`，進攻策略偏向 `skill/basic_attack`，均衡策略只提供輕微泛用加權。
+- 輸出格式：`TrainingEpisodeResult` 與 `TrainingState` 實際累計 `matchWinCount`、`matchLossCount`、`matchDrawCount`、`comebackWinCount`、`leadPickWinCount`，供 metrics summary 與後續賽局策略模型評估使用。
+- 相容性與遷移注意：既有 TensorFlow.js 權重可沿用；本次只改 action ranking 與訓練統計，不需要重建舊模型。若未傳入策略上下文，訓練流程會以目前勝敗統計與 episode seed 產生預設上下文。
+- 驗證方式：執行 `npm.cmd run build` 與 `npm.cmd run server:build`，並確認訓練中的 match 統計會隨 episode 結果增加，replay 不會出現非法技能、非法換牌或體力不足動作。
+## 05/25: 新增賽局策略單獨訓練 UI
+
+- 新增獨立賽局策略訓練入口，`AITrainingPage` 畫面狀態拆為 `modeSelect`、`tacticsList`、`tacticsRun`、`strategyList`、`strategyRun`。
+- `Lobby` 與 AI Training 模式選擇中的「賽局策略訓練」可直接進入策略模型列表，文案固定為「單獨訓練 aggressive / balanced / defensive 策略層」。
+- 前端新增賽局策略 API client：
+  - `GET /api/training/match-strategies`
+  - `POST /api/training/match-strategies`
+  - `GET /api/training/match-strategies/:id`
+  - `POST /api/training/match-strategies/:id/start|pause|reset|save|load`
+  - `GET /api/training/match-strategies/:id/events`
+  - `GET /api/training/match-strategies/:id/metrics-report`
+- 後端新增 `MatchStrategyModelRecord`、`MatchStrategyTrainingState` 與 `MatchStrategyRuntime`，策略資料保存於 `training_data/match-strategies/{strategyId}/`，不混入單局 `training_data/models/`。
+- 策略訓練第一版使用規則權重更新，只調整 aggressive / balanced / defensive 權重與統計；對戰 action 仍透過合法 action 集合選出，不更新單局 DQN 權重。
+- 賽局訓練頁沿用 replay 呈現，統計卡顯示 Episodes、Win Rate、Recent500、Aggressive/Balanced/Defensive 勝率、翻盤勝率與守成勝率；側欄顯示目前策略 mode、action bias 與策略權重。
+- 驗證指令：
+  - `npm.cmd run build`
+  - `npm.cmd run server:build`
+- 05/25: 新增一般模式選角先手隨機與跨局輪替
+  - 新增內容：一般模式進入選角後，第一局先選方由系統隨機決定；若第一局為我方先選，第二局改由對方先選，第三局再回到我方，反之亦然。
+  - 候選規則：每一局進入選角時會重新洗牌候選池，避免同一場三局使用固定候選排序。
+  - 流程規範：`currentPicker` 可為 `player` 或 `computer`；當值為 `computer` 時，由電腦選角計時流程自動預覽並鎖定候選，完成後交回玩家。
+  - 輸出格式：第一局隨機結果為 `player` 時，三局先選順序為 `player -> computer -> player`；第一局隨機結果為 `computer` 時，為 `computer -> player -> computer`。
+  - 驗證：執行 `npm.cmd run build` 通過；Vite 僅保留既有 bundle chunk 大小警告。
+## 05/25: 新增賽局策略神經網路訓練
+
+- 新增第二個 TensorFlow.js 模型 `match-strategy-v1`，保存於 `training_data/match-strategies/{strategyId}/model.json` 與 `weights.bin`，不混入 `training_data/models/`，也不改單局 DQN 的 `battle-tactics-v3-rules`。
+- 賽局 episode 從輪流 Draft 開始：候選池固定為最多 24 隻可戰鬥角色，玩家端由 `MatchStrategyNetwork` 輸出 Draft logits，對手端第一版使用 baseline Draft policy；雙方各選 3 隻後，賽局模型再選我方首發。
+- 進場後賽局模型輸出 `aggressive | balanced | defensive` 與 `skill/basic_attack/switch/shield/rest` action bias。bias 只加權單局 `LearningAgent.selectAction()` 的合法 action 排序，不會新增非法技能、非法換角或體力不足動作。
+- 賽局模型輸入維度獨立於單局 DQN：包含 Draft 輪次、先後手、候選池摘要、己方/敵方隊伍摘要、角色能力與對戰 HP/回合摘要；不使用 `STATE_VECTOR_SIZE = 96`。
+- 賽局模型輸出包含 Draft pick、lead pick、strategy mode 與 action bias。所有選擇都經合法集合遮罩：Draft 不可重複選角，首發只能從己方隊伍選，戰鬥 action 仍由 `getLegalActions()` 決定。
+- API 沿用獨立路徑：`GET/POST /api/training/match-strategies`、`GET/PATCH/DELETE /api/training/match-strategies/:id`、`POST /api/training/match-strategies/:id/start|pause|reset|save|load|clone`、`GET /api/training/match-strategies/:id/events`、`GET /api/training/match-strategies/:id/metrics-report`。
+- `MatchStrategyModelRecord.strategyConfig` 新增設定：`trainDraft`、`trainLead`、`trainMode`、`actionBiasStrength`。訓練頁設定面板可調整第二模型訓練項目與 bias 強度，不影響單局 DQN。
+- `MatchStrategyTrainingState` 新增 `strategyLoss`、`strategyEpsilon`、`draftWins/draftAttempts`、`leadWins/leadAttempts`、`currentDraftContext`，UI 會顯示 Draft 順序、雙方首發、模型 loss、epsilon、Draft 勝率與首發勝率。
+- 驗證：`npm.cmd run build` 通過；`npm.cmd run server:build` 在沙盒內遇到路徑讀取權限問題，提升權限後通過。
+
+## 05/25: 調整專案服務位置
+- 新增目的：將本專案前端與訓練後端移到專用本機高位埠，避免占用 Vite 預設埠或其他專案常用服務位置。
+- 規範用法：前端開發服務固定為 `http://127.0.0.1:18051`，前端 preview 固定為 `http://127.0.0.1:18052`，訓練 API 固定為 `http://127.0.0.1:18053`。
+- 範例：執行 `start_ui.bat` 會建置並開啟 `http://127.0.0.1:18052`；執行 `start_training.bat` 會啟動後端訓練服務 `http://127.0.0.1:18053`。
+- 輸出格式：`VITE_TRAINING_API_BASE` 未設定時，`AITrainingPage`、`MatchStrategyTrainingPage` 與一般模式載入模型權重都會預設連線到 `http://127.0.0.1:18053`；錯誤訊息也提示確認 `18053` port。
+- 相容性：仍保留環境變數覆寫，前端可用 `VITE_TRAINING_API_BASE` 指定其他訓練 API，後端可用 `TRAINING_SERVER_PORT` 覆寫訓練服務埠。
 ## 05/31: 新增一鍵下載所有依賴批次檔
 - 新增功能：根目錄新增 `install_dependencies.bat`，提供 Windows 一鍵安裝專案依賴。
 - 範例用法：雙擊 `install_dependencies.bat`，或在專案根目錄執行 `.\install_dependencies.bat`。
