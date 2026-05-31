@@ -539,3 +539,9 @@ MM/DD: 變更標題
 - 修改項目：`trainingLoop` 的 reward shaping 補強攻擊、治療、無效 setup 與終局血量差，讓模型更重視收頭、保血與高品質勝局。
 - 規範用法：這層戰術先驗只作為 Q 值排序輔助，不取代模型；既有 v3 權重可繼續載入訓練，後續 episode 會逐步套用新的探索率與 reward。
 - 輸出格式：主畫面仍以近 500 場勝率作為主要判讀指標；若加強有效，應先看到 `recentWinRate500` 往上，再看總勝率緩慢追上。
+## 05/31: 新增一鍵下載所有依賴批次檔
+- 新增功能：根目錄新增 `install_dependencies.bat`，提供 Windows 一鍵安裝專案依賴。
+- 範例用法：雙擊 `install_dependencies.bat`，或在專案根目錄執行 `.\install_dependencies.bat`。
+- 規範用法：批次檔必須放在 `Pokemon-AI-Battle-System` 根目錄，因為會讀取 `requirements.txt` 與 `frontend/package.json`。
+- 安裝範圍：Python 依賴使用 `requirements.txt`；前端依賴使用 `frontend/package-lock.json` 時執行 `npm ci`，否則執行 `npm install`。
+- 輸出格式：依序輸出 `[1/3] Upgrading pip`、`[2/3] Installing Python dependencies`、`[3/3] Installing frontend Node dependencies`，訊息使用 ASCII 英文以避免 Windows 批次檔編碼亂碼；失敗時會提示缺少工具或安裝失敗。

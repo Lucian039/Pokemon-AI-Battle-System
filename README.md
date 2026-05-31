@@ -1,3 +1,9 @@
+## 05/31: 新增一鍵下載所有依賴批次檔
+- 新增 `install_dependencies.bat`，放在專案根目錄，雙擊即可依序安裝 Python 與前端 Node 依賴。
+- 執行流程：先檢查 `requirements.txt`、`frontend/package.json`、Python、npm 是否存在，再執行 `python -m pip install -r requirements.txt` 與前端依賴安裝。
+- 前端若存在 `frontend/package-lock.json`，會使用 `npm ci` 依鎖定檔安裝；若沒有鎖定檔，則退回 `npm install`。
+- 使用方式：在 Windows 雙擊 `install_dependencies.bat`，完成後可執行 `start_ui.bat` 或 `start_training.bat`。
+- 輸出格式：批次檔以 `[1/3]`、`[2/3]`、`[3/3]` 顯示安裝階段，訊息使用 ASCII 英文以避免 Windows 批次檔編碼亂碼；任一步失敗會停下並顯示錯誤訊息。
 # Pokemon-AI-Battle-System
 
 ## 05/23: 加強 v3.1 訓練突破平台期
